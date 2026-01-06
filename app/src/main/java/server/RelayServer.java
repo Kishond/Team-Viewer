@@ -29,28 +29,26 @@ public class RelayServer {
     } 
 
     public static boolean isKeyInActiveSessions(String keySession) {
-        for (String key : activeSessions.keySet()) {
-            if (key == keySession) {
-                return false;
-            }
-        }
-        return true;
+        return activeSessions.containsKey(keySession);
     }
 
     public static boolean isKeyInWaitingHosts(String keySession) {
-        for (String key : waitingHosts.keySet()) {
-            if (key == keySession) {
-                return false;
-            }
-        }
-        return true;
+        return waitingHosts.containsKey(keySession);
     }
 
     public static void addAWaitingHost(String key, ClientHandler clientHandler) {
-        if (!waitingHosts.containsKey(key)) {
+        if (!isKeyInWaitingHosts(key)) {
             waitingHosts.put(key, clientHandler);
         } else {
             throw new RuntimeException("waiting host already exists");
+        }
+    }
+
+    public static ControlSession getControlSessionByKey(String keySession) {
+        if (isKeyInActiveSessions(keySession)) {
+            return activeSessions.get(keySession);
+        } else {
+            throw new RuntimeException("key is not in active sessions");
         }
     }
 }

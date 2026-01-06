@@ -12,8 +12,10 @@ public class ClientHandler implements Runnable {
     private final DataInputStream inputStream;
 
     private ClientType clientType = null;
-    private boolean isRunning = false;
-    private String SessionCode;
+    private volatile boolean isRunning = false;
+    private String sessionKey;
+
+    private final Object hostPendingLock = new Object();
 
     public ClientHandler(Socket socket) throws IOException {
         this.socket = socket;
@@ -30,7 +32,7 @@ public class ClientHandler implements Runnable {
             this.clientType = identification();
             switch (this.clientType) {
                 case HOST:
-                    
+                    hostHandler();
                     break;
                 case VIEWER:
 
@@ -40,7 +42,10 @@ public class ClientHandler implements Runnable {
             }
         } catch (IOException e) {
             System.out.println(e.getMessage());
-        } finally  {
+        } catch (InterruptedException e) {
+            System.out.println(e.getMessage());
+        }
+        finally  {
             closeEverything();
         }
     }
@@ -48,7 +53,7 @@ public class ClientHandler implements Runnable {
     private ClientType identification() throws IOException {
         String identification = this.inputStream.readUTF().toUpperCase();
 
-        if (identification != ClientType.HOST.name() && identification != ClientType.VIEWER.name()) {
+        if (identification.equals(ClientType.HOST.name()) && identification.equals(ClientType.VIEWER.name())) {
             sendMessage("identification has been failed :(");
             return ClientType.NULL;
         }
@@ -57,16 +62,50 @@ public class ClientHandler implements Runnable {
     }
 
     
-    private void hostHandler() throws IOException {
-        this.SessionCode = recieveSessionCodeFromHost();
-        RelayServer.addAWaitingHost(SessionCode, this);
-        while (true) {
+    private void hostHandler() throws IOException, InterruptedException {
+        this.sessionKey = recieveSessionKeyFromHost();
 
+        RelayServer.addAWaitingHost(sessionKey, this);
+        hostPendingConnection();
+
+        ControlSession controlSession = RelayServer.getControlSessionByKey(sessionKey);
+        ClientHandler viewerHandler = controlSession.getViewerHandler();
+        // transfering data between the viewer to the host
+        Thread viewerToHost = new Thread(() -> {
+            try {
+                boolean keepRunning = true;
+                while (keepRunning) {
+                    String viewerInput = viewerHandler.inputStream.readUTF();
+                    keepRunning = viewerInput.equals("EXIT");
+                    this.outputStream.writeUTF(viewerInput);
+                }
+            } catch (IOException e) {
+                System.out.println(e.getMessage());
+                closeEverything();
+            }
+        });
+        viewerToHost.start();
+        
+        // transfering data between host to the viewer
+        boolean keepRunning = true;
+        while (keepRunning) {
+            String hostInput = this.inputStream.readUTF();
+            keepRunning = hostInput.equals("EXIT");
+            viewerHandler.outputStream.writeUTF(hostInput);;
         }
+    }
 
+    private void hostPendingConnection() throws InterruptedException {
+        synchronized (this.hostPendingLock) {
+            this.isRunning = true;
+            while (this.isRunning) {
+                this.hostPendingLock.wait();
+            }
+            System.out.println("Viewer has been found");
+        }
     }
     
-    private String recieveSessionCodeFromHost() throws IOException {
+    private String recieveSessionKeyFromHost() throws IOException {
         while (true) {
             String sessionCode = this.inputStream.readUTF();
             if (!RelayServer.isKeyInActiveSessions(sessionCode) && !RelayServer.isKeyInWaitingHosts(sessionCode)) {
