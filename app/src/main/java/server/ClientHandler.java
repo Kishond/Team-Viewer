@@ -5,12 +5,13 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 
+import server.Packet.PacketType;
+
 
 public class ClientHandler implements Runnable {
     private final Socket socket;
 
-    private final DataOutputStream outputStream;
-    private final DataInputStream inputStream;
+    private ServerProtocol serverProtocol;
 
     private ClientType clientType = null;
     private volatile boolean isRunning = false;
@@ -20,9 +21,7 @@ public class ClientHandler implements Runnable {
 
     public ClientHandler(Socket socket) throws IOException {
         this.socket = socket;
-        
-        this.outputStream = new DataOutputStream(socket.getOutputStream());
-        this.inputStream = new DataInputStream(socket.getInputStream());
+        this.serverProtocol = new ServerProtocol(this.socket.getInputStream(), this.socket.getOutputStream());
     }
 
     @Override
@@ -53,14 +52,15 @@ public class ClientHandler implements Runnable {
     }
 
     private ClientType identification() throws IOException {
-        String identification = this.inputStream.readUTF().toUpperCase();
+        Packet identificationPacket = this.serverProtocol.recievePacket();
+        Packet.PacketType packetType = identificationPacket.getPacketType();
 
-        if (!identification.equals(ClientType.HOST.name()) && !identification.equals(ClientType.VIEWER.name())) {
-            sendMessage("identification has been failed :(");
+        if (packetType != Packet.PacketType.HOST && packetType != Packet.PacketType.VIEWER) {
+            this.serverProtocol.sendErrStringPacket("identification has been failed :(");
             return ClientType.NULL;
         }
-        sendMessage("enter desired session code");
-        return identification.equals(ClientType.HOST.name()) ? ClientType.HOST : ClientType.VIEWER;
+        this.serverProtocol.sendErrStringPacket("enter desired session code");
+        return packetType == PacketType.HOST ? ClientType.HOST : ClientType.VIEWER;
     }
 
     
@@ -69,7 +69,7 @@ public class ClientHandler implements Runnable {
 
         RelayServer.addAWaitingHost(sessionKey, this);
         hostPendingConnection();
-        sendMessage("viewer has been found");
+        this.serverProtocol.sendErrStringPacket("viewer has been found");
 
         ControlSession controlSession = RelayServer.getControlSessionByKey(sessionKey);
         ClientHandler viewerHandler = controlSession.getViewerHandler();
@@ -79,9 +79,9 @@ public class ClientHandler implements Runnable {
             try {
                 boolean keepRunning = true;
                 while (keepRunning) {
-                    String viewerInput = viewerHandler.recieveMessage();
-                    keepRunning = !viewerInput.equals("EXIT");
-                    sendMessage(viewerInput);
+                    Packet viewerPacket = viewerHandler.recievePacket();
+                    sendPacket(viewerPacket);;
+                    keepRunning = viewerPacket.getPacketType() != Packet.PacketType.QUIT;
                 }
 
             } catch (IOException e) { System.out.println(e.getMessage()); }
@@ -91,12 +91,12 @@ public class ClientHandler implements Runnable {
         // transfering data between host to the viewer
         boolean keepRunning = true;
         while (keepRunning) {
-            String hostInput = recieveMessage();
-            keepRunning = !hostInput.equals("EXIT");
-            viewerHandler.sendMessage(hostInput);;
+            Packet hostPacket = this.serverProtocol.recievePacket();
+            viewerHandler.sendPacket(hostPacket);
+            keepRunning = hostPacket.getPacketType() != Packet.PacketType.QUIT;
         }
     }
-    
+
     private void hostPendingConnection() throws InterruptedException {
         synchronized (this.hostPendingLock) {
             while (this.isRunning) {
@@ -121,40 +121,39 @@ public class ClientHandler implements Runnable {
 
     }
 
-    
     private String recieveSessionKeyFromHost() throws IOException {
         while (true) {
-            String sessionKey = this.inputStream.readUTF();
+            String sessionKey = this.serverProtocol.getPacketStringPayload();
             if (!RelayServer.isKeyInActiveSessions(sessionKey) && !RelayServer.isKeyInWaitingHosts(sessionKey)) {
                 return sessionKey;
             }
-            sendMessage("Key is already in use, try using a different key");
+            this.serverProtocol.sendErrStringPacket("session Key is in use");
         }
     }
     
     private String recieveSessionKeyFromViewer() throws IOException {
         while (true) {
-            String sessionKey = this.inputStream.readUTF();
+            String sessionKey = this.serverProtocol.getPacketStringPayload();
 
             if (RelayServer.isKeyInWaitingHosts(sessionKey)) {
                 return sessionKey;
             }
-            sendMessage("No waiting host recognized by this key was found");
+            this.serverProtocol.sendErrStringPacket("No waiting host recognized by this key was found");
         }
     }
 
-    private void sendMessage(String msg) throws IOException {
-        this.outputStream.writeUTF(msg);
+    private void sendPacket(Packet packet) throws IOException {
+        this.serverProtocol.sendPacket(packet);
     }
 
-    private String recieveMessage() throws IOException {
-        return this.inputStream.readUTF();
+    private Packet recievePacket() throws IOException {
+        return this.serverProtocol.recievePacket();
     }
-    
+
     private void closeEverything() {
         try {
-            if (inputStream != null) inputStream.close();
-            if (outputStream != null) outputStream.close();
+            if (getInputStream() != null) getInputStream().close();
+            if (getOutputStream() != null) getOutputStream().close();
             if (socket != null) socket.close();
         } catch (IOException e) {
         System.err.println("Error while closing: " + e.getMessage());
@@ -165,12 +164,12 @@ public class ClientHandler implements Runnable {
         return this.socket;
     }
 
-    public DataInputStream getDataInputStream() {
-        return this.inputStream;
+    public DataInputStream getInputStream() {
+        return this.serverProtocol.getInputStream();
     }
 
-    public DataOutputStream getDataOutputStream() {
-        return this.outputStream;
+    public DataOutputStream getOutputStream() {
+        return this.serverProtocol.getOutputStream();
     }
 
     public ClientType getClientType() {
