@@ -1,14 +1,16 @@
-package server;
+package resources;
 
 public class Packet {
-    enum PacketType {
+    public enum PacketType {
         HOST((byte)0),
         VIEWER((byte)1),
         SESSION_KEY((byte)2),
         IMAGE((byte)3),
         COMMAND((byte)4),
         ERR_MESSAGE((byte)5),
-        QUIT((byte)6);
+        SUCCESS((byte)6),
+        CONNECTION_FAILED((byte) 7),
+        QUIT((byte)8);
 
         private final byte byteSign;
 
@@ -38,11 +40,19 @@ public class Packet {
         this.payload = payLoad;
     }
 
+    public Packet(PacketType packetType) {
+        this(packetType, new byte[]{});
+    }
+
     public PacketType getPacketType() {
         return this.packetType;
     }
 
     public byte[] getPayload() {
         return this.payload;
+    }
+
+    public int getPayloadLength() {
+        return this.payload.length;
     }
 }

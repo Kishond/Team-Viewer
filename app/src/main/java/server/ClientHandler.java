@@ -5,7 +5,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 
-import server.Packet.PacketType;
+import resources.*;
+import resources.Packet.PacketType;
 
 
 public class ClientHandler implements Runnable {
@@ -136,6 +137,7 @@ public class ClientHandler implements Runnable {
             String sessionKey = this.serverProtocol.getPacketStringPayload();
 
             if (RelayServer.isKeyInWaitingHosts(sessionKey)) {
+                
                 return sessionKey;
             }
             this.serverProtocol.sendErrStringPacket("No waiting host recognized by this key was found");

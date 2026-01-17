@@ -1,4 +1,4 @@
-package server;
+package resources;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -7,9 +7,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
-import server.Packet.PacketType;
+import resources.Packet.PacketType;
 
-public class ServerProtocol {
+
+public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSender {
     private final DataInputStream inputStream;
     private final DataOutputStream outputStream;
 
@@ -49,6 +50,12 @@ public class ServerProtocol {
         sendPacket(packet);
     }
 
+    public void sendSuccessPacket(String successMsg) throws IOException {
+        Packet packet = new Packet(Packet.PacketType.SUCCESS, successMsg.getBytes(StandardCharsets.UTF_8));
+
+        sendPacket(packet);
+    }
+
     public DataInputStream getInputStream() {
         return this.inputStream;
     }
@@ -57,4 +64,3 @@ public class ServerProtocol {
         return this.outputStream;
     }
 }
-
