@@ -14,20 +14,23 @@ import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import java.awt.event.*;
 
-public class ViewerUI extends JFrame implements RemoteUpdateListener {
+public class ViewerUI extends JFrame implements RemoteUpdateListener, ConnectionCallback {
     private final ViewerUIListener networkSender;
+    private final ConnectableToHost viewerManager;
     
     private final ImagePanel canvas;
 
-    public ViewerUI(ViewerUIListener networkSender) {
+    public ViewerUI(ViewerUIListener networkSender, ConnectableToHost viewerManager) {
         this.networkSender = networkSender;
-        
+        this.viewerManager = viewerManager;
+
         this.setTitle("Remote Desktop Viewer");
         this.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         this.setSize(1280, 720);
         this.setLayout(new BorderLayout());
 
         this.canvas = new ImagePanel();
+        this.canvas.setEnabled(false);
         this.add(canvas, BorderLayout.CENTER);
 
         setupEventListeners();
@@ -80,23 +83,24 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener {
 
     @Override
     public void onImageRecieved(byte[] imageData) {
-    try {
-        ByteArrayInputStream bais = new ByteArrayInputStream(imageData);
-        BufferedImage image = ImageIO.read(bais);
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(imageData);
+            BufferedImage image = ImageIO.read(bais);
 
-        if (image != null) {
-            SwingUtilities.invokeLater(() -> {
-                canvas.updateImage(image);
-            });
+            if (image != null) {
+                SwingUtilities.invokeLater(() -> {
+                    canvas.updateImage(image);
+                });
+            }
+        } catch (IOException e) {
+            System.err.println(e.getMessage());
         }
-    } catch (IOException e) {
-        System.err.println(e.getMessage());
     }
-}
 
     @Override
     public void onSessionClosed(String reason) {
         SwingUtilities.invokeLater(() -> {
+            this.canvas.setEnabled(false);
             JOptionPane.showMessageDialog(this, "Session Closed: " + reason);
             this.dispose();
         });
@@ -109,7 +113,33 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener {
 
     @Override
     public void showUI() {
-        SwingUtilities.invokeLater(() -> this.setVisible(true));
+        SwingUtilities.invokeLater(() -> {
+            this.setVisible(true);
+            // Request the manager to start the connection process
+            promptForConnection();
+        });
+    }
+
+    private void promptForConnection() {
+        viewerManager.connectToHost(() -> {
+            return JOptionPane.showInputDialog(this, "Enter Session Code:");
+        }, this);
+    }
+
+    @Override
+    public void onConnectionSuccess() {
+        SwingUtilities.invokeLater(() -> {
+            this.setTitle("Connected to Host - Remote Desktop Viewer");
+            this.canvas.setEnabled(true); 
+            this.canvas.requestFocusInWindow(); 
+        });
+    }
+
+    @Override
+    public void onConnectionError(String message) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, message);
+        });
     }
 
     @Override
@@ -135,7 +165,15 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener {
             if (currentImage != null) {
                 // Draws the received screen to fill the panel
                 g.drawImage(currentImage, 0, 0, this.getWidth(), this.getHeight(), null);
+            } else {
+                // Placeholder when not connected
+                g.drawString("Waiting for connection...", 10, 20);
             }
         }
     }
+}
+
+interface ConnectionCallback {
+    void onConnectionSuccess();
+    void onConnectionError(String message);
 }

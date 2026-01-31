@@ -75,7 +75,7 @@ public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSen
         return this.outputStream;
     }
 
-    // --- STATIC CREATION METHODS (Viewer Side) ---
+    // host side
 
     public static Packet createCordsPacket(int x, int y) {
         ByteBuffer buffer = ByteBuffer.allocate(8);
@@ -108,7 +108,7 @@ public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSen
         return new Packet(PacketType.QUIT, new byte[0]);
     }
 
-    // --- STATIC EXTRACTION METHODS (Host Side) ---
+    // viewer side
 
     public static int[] getCordsFromPacket(Packet packet) {
         ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());

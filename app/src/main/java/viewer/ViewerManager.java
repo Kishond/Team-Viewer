@@ -9,7 +9,7 @@ import java.util.function.Supplier;
 import resources.*;
 import resources.Packet.PacketType;
 
-public class ViewerManager implements ConnectableToHost , HandleDissconnection {
+public class ViewerManager implements ConnectableToHost, HandleDissconnection {
 
     private static final String SERVER_IP = "127.0.0.1"; 
     private static final int SERVER_PORT = 5000; 
@@ -23,6 +23,7 @@ public class ViewerManager implements ConnectableToHost , HandleDissconnection {
 
     private Thread networkSenderThread;
     private Thread networkRecieverThread;
+    private Thread connectionThread; // Added to manage the background connection process
 
     private boolean hasConnectedTohost = false;
 
@@ -34,9 +35,9 @@ public class ViewerManager implements ConnectableToHost , HandleDissconnection {
         this.serverProtocol = new ServerProtocol(inputStream, outputStream);
     }
 
-    public void startViewer() {
+    private void startViewer() {
         this.networkSender = new NetworkSender(this.serverProtocol, this);
-        this.viewerUI = new ViewerUI(this.networkSender);
+        this.viewerUI = new ViewerUI(this.networkSender, this);
         this.networkReciever = new NetworkReciever(this.serverProtocol, this.viewerUI, this);
         
         this.networkSenderThread = new Thread(networkSender);
@@ -47,39 +48,60 @@ public class ViewerManager implements ConnectableToHost , HandleDissconnection {
         this.networkRecieverThread.start();
     }
 
-    public void connectToHost(Supplier<String> sesionCode) throws IOException {
-        Packet packet = new Packet(Packet.PacketType.VIEWER);
-        
-        this.serverProtocol.sendPacket(packet);
-        Packet recievedPacket = serverProtocol.recievePacket();
-        if (recievedPacket.getPacketType() != PacketType.SUCCESS) {
-            throw new RuntimeException("Server Error");
-        }
-        
-        serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, sesionCode.get().getBytes()));
-        recievedPacket = serverProtocol.recievePacket();
+    @Override
+    public void connectToHost(Supplier<String> sesionCode, ConnectionCallback callback) {
+        this.connectionThread = new Thread(() -> {
+            try {
+                Packet packet = new Packet(Packet.PacketType.VIEWER);
+                
+                this.serverProtocol.sendPacket(packet);
+                Packet recievedPacket = serverProtocol.recievePacket();
+                
+                if (recievedPacket.getPacketType() != PacketType.SUCCESS) {
+                    callback.onConnectionError("Server denied viewer request");
+                    return;
+                }
+                
+                serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, sesionCode.get().getBytes()));
+                recievedPacket = serverProtocol.recievePacket();
 
-        while (recievedPacket.getPacketType() == PacketType.CONNECTION_FAILED) {
-            serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, sesionCode.get().getBytes()));
-            recievedPacket = serverProtocol.recievePacket();
-        }
+                while (recievedPacket.getPacketType() == PacketType.CONNECTION_FAILED) {
+                    callback.onConnectionError("Invalid Session Code. Please try again.");
+                    serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, sesionCode.get().getBytes()));
+                    recievedPacket = serverProtocol.recievePacket();
+                }
 
-        if (recievedPacket.getPacketType() != PacketType.SUCCESS) {
-            throw new RuntimeException(recievedPacket.getPacketType().name());
-        }
-        this.hasConnectedTohost = true;
+                if (recievedPacket.getPacketType() != PacketType.SUCCESS) {
+                    callback.onConnectionError("Unexpected packet: " + recievedPacket.getPacketType().name());
+                    return;
+                }
+
+                // Connection successful
+                this.hasConnectedTohost = true;
+                callback.onConnectionSuccess();
+
+            } catch (IOException e) {
+                callback.onConnectionError("Network Error: " + e.getMessage());
+            } catch (Exception e) {
+                callback.onConnectionError("Critical Error: " + e.getMessage());
+            }
+        });
+
+        this.connectionThread.start();
     }
 
     public boolean hasConnectedTohost() {
         return this.hasConnectedTohost;
     }
+
     public static void main(String[] args) {
         try {
             ViewerManager viewerManager = new ViewerManager(SERVER_IP, SERVER_PORT);
             viewerManager.startViewer();
             
-        } catch (IOException e) {e.getMessage();}
-
+        } catch (IOException e) {
+            System.err.println("Could not connect to server: " + e.getMessage());
+        }
     }
 
     @Override
@@ -108,21 +130,25 @@ public class ViewerManager implements ConnectableToHost , HandleDissconnection {
             if (networkRecieverThread != null) {
                 networkRecieverThread.interrupt();
             }
+            if (connectionThread != null) {
+                connectionThread.interrupt();
+            }
+
             // Close the UI
-            this.viewerUI.onSessionClosed(reason);
+            if (this.viewerUI != null) {
+                this.viewerUI.onSessionClosed(reason);
+            }
 
             this.hasConnectedTohost = false;
         } catch (IOException e) {
             System.err.println(e.getMessage());
         }
     }
-
-    
 }
 
 interface ConnectableToHost {
-    // on call connect to the host
-    public void connectToHost(Supplier<String> sesionCode) throws IOException;
+    // on call connect to the host asynchronously
+    public void connectToHost(Supplier<String> sesionCode, ConnectionCallback callback);
 
     // has host been connected
     public boolean hasConnectedTohost();
@@ -132,8 +158,8 @@ interface HandleDissconnection {
     public void handleConnectionLost();
     public void handleQuitRequest();
 }
-    
 
-
-
-
+/**
+ * Callback interface to notify the UI about the connection status
+ * since the connection logic now runs in a background thread.
+ */
