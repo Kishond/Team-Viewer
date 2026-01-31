@@ -1,9 +1,14 @@
 package viewer;
 
 public interface RemoteUpdateListener {
-    // when viewer UI recieves image
+    // When viewer UI receives image data to be rendered
     public void onImageRecieved(byte[] imageData);
     
-    // when host connection has been closed
+    // When host connection has been closed or lost
     public void onSessionClosed(String reason);
+
+    // UI State Management
+    public void hideUI();
+    public void showUI();
+    public void closeUI();
 }

@@ -6,22 +6,24 @@ import java.io.IOException;
 import java.net.Socket;
 import java.util.function.Supplier;
 
-import javax.swing.SwingUtilities;
-
 import resources.*;
 import resources.Packet.PacketType;
 
-public class ViewerManager implements ConnectableToHost {
+public class ViewerManager implements ConnectableToHost , HandleDissconnection {
+
     private static final String SERVER_IP = "127.0.0.1"; 
     private static final int SERVER_PORT = 5000; 
     
     private final ServerProtocol serverProtocol;
     private final Socket viewerSocket;
 
-    private ViewerUI viewerUI;
+    private RemoteUpdateListener viewerUI;
     private NetworkReciever networkReciever;
     private NetworkSender networkSender;
-    
+
+    private Thread networkSenderThread;
+    private Thread networkRecieverThread;
+
     private boolean hasConnectedTohost = false;
 
     public ViewerManager(String serverIP, int serverPort) throws IOException {
@@ -33,14 +35,16 @@ public class ViewerManager implements ConnectableToHost {
     }
 
     public void startViewer() {
-        this.networkSender = new NetworkSender(this.serverProtocol);
+        this.networkSender = new NetworkSender(this.serverProtocol, this);
+        this.viewerUI = new ViewerUI(this.networkSender);
+        this.networkReciever = new NetworkReciever(this.serverProtocol, this.viewerUI, this);
+        
+        this.networkSenderThread = new Thread(networkSender);
+        this.networkRecieverThread = new Thread(networkReciever);
 
-        SwingUtilities.invokeLater(() -> {
-                this.viewerUI = new ViewerUI(this, this.networkSender);
-                this.viewerUI.setVisible(true);
-            });
-
-        this.networkReciever = new NetworkReciever(this.serverProtocol, this.viewerUI);
+        this.networkSenderThread.start();
+        this.viewerUI.showUI();
+        this.networkRecieverThread.start();
     }
 
     public void connectToHost(Supplier<String> sesionCode) throws IOException {
@@ -77,6 +81,43 @@ public class ViewerManager implements ConnectableToHost {
         } catch (IOException e) {e.getMessage();}
 
     }
+
+    @Override
+    public void handleConnectionLost() {
+        cleanup("Connection has been lost");
+    }
+
+    @Override
+    public void handleQuitRequest() {
+        cleanup("By quit request");
+    }
+
+    // Stop program helper method
+    private void cleanup(String reason) {
+        System.out.println(reason);
+        try {
+            // Closing sockets
+            if (viewerSocket != null && !viewerSocket.isClosed()) {
+                viewerSocket.close();
+            }
+            
+            // Interrupting the networking threads if necessary 
+            if (networkSenderThread != null) {
+                networkSenderThread.interrupt();
+            } 
+            if (networkRecieverThread != null) {
+                networkRecieverThread.interrupt();
+            }
+            // Close the UI
+            this.viewerUI.onSessionClosed(reason);
+
+            this.hasConnectedTohost = false;
+        } catch (IOException e) {
+            System.err.println(e.getMessage());
+        }
+    }
+
+    
 }
 
 interface ConnectableToHost {
@@ -86,5 +127,13 @@ interface ConnectableToHost {
     // has host been connected
     public boolean hasConnectedTohost();
 }
+
+interface HandleDissconnection {
+    public void handleConnectionLost();
+    public void handleQuitRequest();
+}
+    
+
+
 
 

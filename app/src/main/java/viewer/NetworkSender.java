@@ -1,43 +1,75 @@
 package viewer;
 
+import java.io.IOException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import resources.*;
 
 public class NetworkSender implements ViewerUIListener, Runnable {
-    private ServerProtocolSender serverProtocol;
+    private final ServerProtocolSender serverProtocol;
+    private final HandleDissconnection viewerManager;
+    
+    private final BlockingQueue<Packet> packetQueue;
 
-    public NetworkSender(ServerProtocolSender serverProtocol) {
+    private boolean isRunning;
+
+    public NetworkSender(ServerProtocolSender serverProtocol, HandleDissconnection viewerManager) {
         this.serverProtocol = serverProtocol;
-    }
+        this.viewerManager = viewerManager;
 
-    @Override
-    public void sendMouseMove(int x, int y) {
-        throw new UnsupportedOperationException("Unimplemented method 'sendMouseMove'");
-    }
+        this.packetQueue = new LinkedBlockingQueue<>();
 
-    @Override
-    public void sendMouseButton(int button, boolean isPressed) {
-        throw new UnsupportedOperationException("Unimplemented method 'sendMouseButton'");
-    }
-
-    @Override
-    public void sendMouseWheel(int rotation) {
-        throw new UnsupportedOperationException("Unimplemented method 'sendMouseWheel'");
-    }
-
-    @Override
-    public void sendKeyPress(int keyCode, boolean isPressed) {
-        throw new UnsupportedOperationException("Unimplemented method 'sendKeyPress'");
-    }
-
-    @Override
-    public void sendDisconnect() {
-        throw new UnsupportedOperationException("Unimplemented method 'sendDisconnect'");
+        this.isRunning = false;
     }
 
     @Override
     public void run() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'run'");
+        this.isRunning = true;
+        try {
+            while (isRunning) {
+                Packet packet = packetQueue.take();
+                serverProtocol.sendPacket(packet);
+                
+                // if recieved QUIT packet, stop and notify viewer manager
+                if (packet.getPacketType() == Packet.PacketType.QUIT) {
+                    this.viewerManager.handleQuitRequest();
+                    isRunning = false;
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
+            viewerManager.handleConnectionLost();
+        }
+    }
+
+    public boolean isRunning() {
+        return this.isRunning;
+    }
+
+    @Override
+    public void sendMouseMove(int x, int y) {
+        packetQueue.offer(ServerProtocol.createCordsPacket(x, y));
+    }
+
+    @Override
+    public void sendMouseButton(int button, boolean isPressed) {
+        packetQueue.offer(ServerProtocol.createMouseButtonPacket(button, isPressed));
+    }
+
+    @Override
+    public void sendMouseWheel(int rotation) {
+        packetQueue.offer(ServerProtocol.createMouseWheelPacket(rotation));
+    }
+
+    @Override
+    public void sendKeyPress(int keyCode, boolean isPressed) {
+        packetQueue.offer(ServerProtocol.createKeyPressPacket(keyCode, isPressed));
+    }
+
+    @Override
+    public void sendDisconnect() {
+        packetQueue.offer(ServerProtocol.createQuitPacket());
     }
     
 }

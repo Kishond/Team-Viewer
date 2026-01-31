@@ -10,7 +10,11 @@ public class Packet {
         ERR_MESSAGE((byte)5),
         SUCCESS((byte)6),
         CONNECTION_FAILED((byte) 7),
-        QUIT((byte)8);
+        MOUSE_MOVE((byte) 8),
+        MOUSE_WHEEL((byte) 9),
+        MOUSE_BUTTON((byte) 10),
+        KEY_PRESS((byte) 11),
+        QUIT((byte)12);
 
         private final byte byteSign;
 
