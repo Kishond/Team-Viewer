@@ -34,7 +34,7 @@ public class RelayServer {
             }
         }
         catch (IOException e) {
-        System.out.println("somthing went wrong");
+        System.out.println("stop the current server broda or switch port");
         }
     } 
 

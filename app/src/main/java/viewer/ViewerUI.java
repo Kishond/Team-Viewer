@@ -97,6 +97,7 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
 
     @Override
     public void onSessionClosed(String reason) {
+        System.out.println("session closed");
         SwingUtilities.invokeLater(() -> {
             this.canvas.setEnabled(false);
             JOptionPane.showMessageDialog(this, "Session Closed: " + reason);

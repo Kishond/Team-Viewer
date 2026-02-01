@@ -127,7 +127,10 @@ public class HostManager implements RegisterableToHost, HandleDissconnection {
 
     private void cleanup(String reason) {
         System.out.println("Cleaning up: " + reason);
+        this.networkSender.queueDisconnect();
         try {
+            this.networkReciever.setRunning(false);
+            while (this.networkSender.isRunning()) {}
             // Expanded if statements for readability
             if (hostSocket != null) {
                 if (!hostSocket.isClosed()) {

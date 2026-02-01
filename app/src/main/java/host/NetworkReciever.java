@@ -50,11 +50,17 @@ public class NetworkReciever implements Runnable {
                 }
             }
         } catch (IOException e) {
-            hostManager.handleConnectionLost();
+            if (isRunning) {
+                hostManager.handleConnectionLost();
+            }
         }
     }
 
     public boolean isRunning() {
         return this.isRunning;
+    }
+
+    public void setRunning(boolean isRunning) {
+        this.isRunning = isRunning;
     }
 }

@@ -10,7 +10,7 @@ public class NetworkSender implements HostActionsListener, Runnable {
     private final HandleDissconnection hostManager;
     
     private final BlockingQueue<Packet> packetQueue;
-    private boolean isRunning;
+    private volatile boolean isRunning;
 
     public NetworkSender(ServerProtocolSender serverProtocol, HandleDissconnection hostManager) {
         this.serverProtocol = serverProtocol;
@@ -28,27 +28,30 @@ public class NetworkSender implements HostActionsListener, Runnable {
                 // Blocks until a packet is offered via the HostActionsListener methods
                 Packet packet = packetQueue.take();
                 serverProtocol.sendPacket(packet);
-                
                 if (packet.getPacketType() == Packet.PacketType.QUIT) {
-                    this.hostManager.handleQuitRequest();
+                    System.out.println("quit");
+                    serverProtocol.sendPacket(new Packet(Packet.PacketType.QUIT));
+                    System.out.println("sent");
                     isRunning = false;
                 }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (IOException e) {
-            hostManager.handleConnectionLost();
+            if (isRunning) {
+                hostManager.handleConnectionLost();
+            }
         }
     }
 
     @Override
-    public void sendImage(byte[] imageData) {
+    public void queueImage(byte[] imageData) {
         // RobotController calls this to queue a new screenshot
         packetQueue.offer(new Packet(Packet.PacketType.IMAGE, imageData));
     }
 
     @Override
-    public void sendDisconnect() {
+    public void queueDisconnect() {
         // Queues a QUIT packet to gracefully close the session
         packetQueue.offer(new Packet(Packet.PacketType.QUIT));
     }
@@ -62,10 +65,10 @@ interface HostActionsListener {
     /**
      * Sends the captured screen image to the viewer.
      */
-    void sendImage(byte[] imageData);
+    void queueImage(byte[] imageData);
 
     /**
      * Notifies the server and viewer that the host is disconnecting.
      */
-    void sendDisconnect();
+    void queueDisconnect();
 }

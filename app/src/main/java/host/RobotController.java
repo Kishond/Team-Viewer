@@ -41,7 +41,7 @@ public class RobotController implements RemoteActionListener {
             while (isCapturing) {
                 byte[] frame = captureScreen();
                 if (frame != null) {
-                    senderListener.sendImage(frame);
+                    senderListener.queueImage(frame);
                 }
                 
                 try { Thread.sleep(10); } catch (InterruptedException e) { break; }
