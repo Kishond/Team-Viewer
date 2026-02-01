@@ -50,12 +50,12 @@ public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSen
     }
 
     public String getPacketStringPayload() throws IOException {
-        Packet packet = recievePacket();
-        if (packet.getPacketType() != Packet.PacketType.SESSION_KEY) {
-            throw new IllegalArgumentException("packet type is not a string valid");
-        }
-        return new String(packet.getPayload(), StandardCharsets.UTF_8);
+    Packet packet = recievePacket();
+    if (packet.getPacketType() != Packet.PacketType.SESSION_KEY) {
+        throw new IllegalArgumentException("Expected SESSION_KEY but got: " + packet.getPacketType());
     }
+    return new String(packet.getPayload(), StandardCharsets.UTF_8);
+}
 
     public void sendErrStringPacket(String errMsg) throws IOException {
         Packet packet = new Packet(Packet.PacketType.ERR_MESSAGE, errMsg.getBytes(StandardCharsets.UTF_8));

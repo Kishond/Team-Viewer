@@ -23,7 +23,7 @@ public class ViewerManager implements ConnectableToHost, HandleDissconnection {
 
     private Thread networkSenderThread;
     private Thread networkRecieverThread;
-    private Thread connectionThread; // Added to manage the background connection process
+    private Thread connectionThread; 
 
     private boolean hasConnectedTohost = false;
 
@@ -43,47 +43,53 @@ public class ViewerManager implements ConnectableToHost, HandleDissconnection {
         this.networkSenderThread = new Thread(networkSender);
         this.networkRecieverThread = new Thread(networkReciever);
 
-        this.networkSenderThread.start();
         this.viewerUI.showUI();
-        this.networkRecieverThread.start();
     }
 
     @Override
     public void connectToHost(Supplier<String> sesionCode, ConnectionCallback callback) {
         this.connectionThread = new Thread(() -> {
             try {
-                Packet packet = new Packet(Packet.PacketType.VIEWER);
+                Packet idPacket = new Packet(Packet.PacketType.VIEWER);
+                this.serverProtocol.sendPacket(idPacket);
                 
-                this.serverProtocol.sendPacket(packet);
-                Packet recievedPacket = serverProtocol.recievePacket();
+                Packet promptPacket = serverProtocol.recievePacket(); 
                 
-                if (recievedPacket.getPacketType() != PacketType.SUCCESS) {
-                    callback.onConnectionError("Server denied viewer request");
-                    return;
-                }
+                boolean isAuthorized = false;
                 
-                serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, sesionCode.get().getBytes()));
-                recievedPacket = serverProtocol.recievePacket();
+                // 3. Loop until connection 
+                while (!isAuthorized) {
+                    String key = sesionCode.get();
+                    if (key == null) {
+                        return; // User cancelled the dialog
+                    }
 
-                while (recievedPacket.getPacketType() == PacketType.CONNECTION_FAILED) {
-                    callback.onConnectionError("Invalid Session Code. Please try again.");
-                    serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, sesionCode.get().getBytes()));
-                    recievedPacket = serverProtocol.recievePacket();
+                    this.serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, key.getBytes()));
+                    
+                    Packet response = serverProtocol.recievePacket();
+                    
+                    if (response.getPacketType() == PacketType.SUCCESS) {
+                        isAuthorized = true;
+                    } else {
+                        // Notify UI to show the error message received from server
+                        String serverMessage = new String(response.getPayload());
+                        callback.onConnectionError(serverMessage);
+                    }
                 }
 
-                if (recievedPacket.getPacketType() != PacketType.SUCCESS) {
-                    callback.onConnectionError("Unexpected packet: " + recievedPacket.getPacketType().name());
-                    return;
-                }
-
-                // Connection successful
+                // 4. Connection successful
                 this.hasConnectedTohost = true;
+
+                this.networkSenderThread.start();
+                this.networkRecieverThread.start();
+
                 callback.onConnectionSuccess();
+                System.out.println("sucess in viewer manager");
 
             } catch (IOException e) {
-                callback.onConnectionError("Network Error: " + e.getMessage());
+                callback.onConnectionError(e.getMessage());
             } catch (Exception e) {
-                callback.onConnectionError("Critical Error: " + e.getMessage());
+                callback.onConnectionError(e.getMessage());
             }
         });
 
@@ -159,7 +165,3 @@ interface HandleDissconnection {
     public void handleQuitRequest();
 }
 
-/**
- * Callback interface to notify the UI about the connection status
- * since the connection logic now runs in a background thread.
- */

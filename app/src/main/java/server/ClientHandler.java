@@ -70,7 +70,6 @@ public class ClientHandler implements Runnable {
 
         RelayServer.addAWaitingHost(sessionKey, this);
         hostPendingConnection();
-        this.serverProtocol.sendErrStringPacket("viewer has been found");
 
         ControlSession controlSession = RelayServer.getControlSessionByKey(sessionKey);
         ClientHandler viewerHandler = controlSession.getViewerHandler();
@@ -113,19 +112,23 @@ public class ClientHandler implements Runnable {
 
         this.controlSession = new ControlSession(this, hostHandler);
         RelayServer.addAnActiveSession(sessionKey, this.controlSession);
+        
+        hostHandler.serverProtocol.sendSuccessPacket("connected to viewer!"); 
+        hostHandler.serverProtocol.recievePacket();
 
-        // notify host for an upcoming connection
+        this.serverProtocol.sendSuccessPacket("Connected to host!"); 
+
         synchronized (hostHandler.hostPendingLock) { 
             hostHandler.isRunning = false;
             hostHandler.hostPendingLock.notify();
         }
-
     }
 
     private String recieveSessionKeyFromHost() throws IOException {
         while (true) {
             String sessionKey = this.serverProtocol.getPacketStringPayload();
             if (!RelayServer.isKeyInActiveSessions(sessionKey) && !RelayServer.isKeyInWaitingHosts(sessionKey)) {
+                this.serverProtocol.sendSuccessPacket("key found");
                 return sessionKey;
             }
             this.serverProtocol.sendErrStringPacket("session Key is in use");

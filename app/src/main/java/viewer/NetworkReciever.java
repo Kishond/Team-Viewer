@@ -33,11 +33,9 @@ public class NetworkReciever implements Runnable {
                 }
             }
         } catch (Exception e) {
-            // Any interruption or socket closure lands here
             this.viewerManager.handleConnectionLost();
         } finally {
-            // Final cleanup message or logging
-            System.out.println("NetworkReceiver has terminated.");
+            System.out.println("NetworkReceiver been shutted off");
         }
     }
 }
