@@ -54,6 +54,9 @@ public class ViewerManager implements ConnectableToHost, HandleDissconnection {
                 this.serverProtocol.sendPacket(idPacket);
                 
                 Packet promptPacket = serverProtocol.recievePacket(); 
+                if (promptPacket.getPacketType() == PacketType.ERR_MESSAGE) {
+                    throw new RuntimeException("Identification has been failed");
+                }
                 
                 boolean isAuthorized = false;
                 
@@ -84,7 +87,6 @@ public class ViewerManager implements ConnectableToHost, HandleDissconnection {
                 this.networkRecieverThread.start();
 
                 callback.onConnectionSuccess();
-                System.out.println("sucess in viewer manager");
 
             } catch (IOException e) {
                 callback.onConnectionError(e.getMessage());

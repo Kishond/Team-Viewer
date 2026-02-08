@@ -60,7 +60,7 @@ public class ClientHandler implements Runnable {
             this.serverProtocol.sendErrStringPacket("identification has been failed :(");
             return ClientType.NULL;
         }
-        this.serverProtocol.sendErrStringPacket("enter desired session code");
+        this.serverProtocol.sendSuccessPacket("enter desired session code");
         return packetType == PacketType.HOST ? ClientType.HOST : ClientType.VIEWER;
     }
 
@@ -69,6 +69,8 @@ public class ClientHandler implements Runnable {
         String sessionKey = recieveSessionKeyFromHost();
 
         RelayServer.addAWaitingHost(sessionKey, this);
+        System.out.println("Host has been added to waiting list");
+
         hostPendingConnection();
 
         ControlSession controlSession = RelayServer.getControlSessionByKey(sessionKey);

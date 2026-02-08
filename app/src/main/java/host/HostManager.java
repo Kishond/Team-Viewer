@@ -86,10 +86,8 @@ public class HostManager implements RegisterableToHost, HandleDissconnection {
                 callback.onRegistrationSuccess(finalKey);
 
                 Packet viewerFoundPacket = serverProtocol.recievePacket(); 
-                System.out.println(viewerFoundPacket.getPacketType() + "recieved host manager packet");
 
                 serverProtocol.sendPacket(new Packet(PacketType.SUCCESS));
-                System.out.println("passed found packet" + viewerFoundPacket.getPacketType());
                 if (viewerFoundPacket.getPacketType() != PacketType.SUCCESS) {
                     handleConnectionLost();
                     return;
