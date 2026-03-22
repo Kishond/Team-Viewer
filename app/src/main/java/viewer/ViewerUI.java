@@ -29,21 +29,24 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
 
         this.canvas = new ImagePanel();
         this.canvas.setEnabled(false);
+        this.canvas.setFocusable(true); // Required to capture key events
         this.add(canvas, BorderLayout.CENTER);
 
         setupEventListeners();
     }
 
     private void setupEventListeners() {
-        // mouse movement and clicks 
+        // Mouse movement and clicks with scaling fix
         canvas.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
+                sendScaledMouseCoords(e.getX(), e.getY());
                 networkSender.sendMouseButton(e.getButton(), true);
             }
 
             @Override
             public void mouseReleased(MouseEvent e) {
+                sendScaledMouseCoords(e.getX(), e.getY());
                 networkSender.sendMouseButton(e.getButton(), false);
             }
         });
@@ -51,22 +54,22 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
         canvas.addMouseMotionListener(new MouseMotionAdapter() {
             @Override
             public void mouseMoved(MouseEvent e) {
-                networkSender.sendMouseMove(e.getX(), e.getY());
+                sendScaledMouseCoords(e.getX(), e.getY());
             }
 
             @Override
             public void mouseDragged(MouseEvent e) {
-                networkSender.sendMouseMove(e.getX(), e.getY());
+                sendScaledMouseCoords(e.getX(), e.getY());
             }
         });
 
-        // mouse wheel 
+        // Mouse wheel 
         canvas.addMouseWheelListener(e -> {
             networkSender.sendMouseWheel(e.getWheelRotation());
         });
 
-        // keyboard events 
-        this.addKeyListener(new KeyAdapter() {
+        // Keyboard events moved to canvas for focus reliability
+        canvas.addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
                 networkSender.sendKeyPress(e.getKeyCode(), true);
@@ -77,6 +80,23 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
                 networkSender.sendKeyPress(e.getKeyCode(), false);
             }
         });
+    }
+
+    /**
+     * Maps local Canvas coordinates to Host screen coordinates 
+     * based on the received image dimensions.
+     */
+    private void sendScaledMouseCoords(int x, int y) {
+        BufferedImage img = canvas.getImage();
+        if (img != null) {
+            double scaleX = (double) img.getWidth() / canvas.getWidth();
+            double scaleY = (double) img.getHeight() / canvas.getHeight();
+
+            int scaledX = (int) (x * scaleX);
+            int scaledY = (int) (y * scaleY);
+
+            networkSender.sendMouseMove(scaledX, scaledY);
+        }
     }
 
     @Override
@@ -114,7 +134,6 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
     public void showUI() {
         SwingUtilities.invokeLater(() -> {
             this.setVisible(true);
-            // Request the manager to start the connection process
             promptForConnection();
         });
     }
@@ -130,7 +149,7 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
         SwingUtilities.invokeLater(() -> {
             this.setTitle("Connected to Host - Remote Desktop Viewer");
             this.canvas.setEnabled(true); 
-            this.canvas.requestFocusInWindow(); 
+            this.canvas.requestFocusInWindow(); // Give focus to canvas for keyboard input
         });
     }
 
@@ -149,23 +168,24 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
         });
     }
 
-    // Inner class to handle the actual drawing of the screen shots
     private static class ImagePanel extends JPanel {
         private BufferedImage currentImage;
 
         public void updateImage(BufferedImage img) {
             this.currentImage = img;
-            this.repaint(); // Triggers paintComponent
+            this.repaint();
+        }
+
+        public BufferedImage getImage() {
+            return currentImage;
         }
 
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             if (currentImage != null) {
-                // Draws the received screen to fill the panel
                 g.drawImage(currentImage, 0, 0, this.getWidth(), this.getHeight(), null);
             } else {
-                // Placeholder when not connected
                 g.drawString("Waiting for connection...", 10, 20);
             }
         }
