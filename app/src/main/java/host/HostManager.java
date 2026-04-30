@@ -100,6 +100,9 @@ public class HostManager implements RegisterableToHost, HandleDissconnection {
                     e.printStackTrace();
                 }
 
+                this.networkSender.setCryptoKey(finalKey);
+                this.networkReciever.setCryptoKey(finalKey);
+
                 this.networkSenderThread.start();
                 this.networkRecieverThread.start();
                 

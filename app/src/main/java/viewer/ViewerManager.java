@@ -59,10 +59,11 @@ public class ViewerManager implements ConnectableToHost, HandleDissconnection {
                 }
                 
                 boolean isAuthorized = false;
+                String key = null;
                 
                 // 3. Loop until connection 
                 while (!isAuthorized) {
-                    String key = sesionCode.get();
+                    key = sesionCode.get();
                     if (key == null) {
                         return; // User cancelled the dialog
                     }
@@ -82,6 +83,10 @@ public class ViewerManager implements ConnectableToHost, HandleDissconnection {
 
                 // 4. Connection successful
                 this.hasConnectedTohost = true;
+
+                // Pass the key for E2E encryption
+                this.networkSender.setCryptoKey(key); 
+                this.networkReciever.setCryptoKey(key);
 
                 this.networkSenderThread.start();
                 this.networkRecieverThread.start();
@@ -166,4 +171,3 @@ interface HandleDissconnection {
     public void handleConnectionLost();
     public void handleQuitRequest();
 }
-

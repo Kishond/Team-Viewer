@@ -11,6 +11,7 @@ public class NetworkSender implements HostActionsListener, Runnable {
     
     private final BlockingQueue<Packet> packetQueue;
     private volatile boolean isRunning;
+    private String cryptoKey;
 
     public NetworkSender(ServerProtocolSender serverProtocol, HandleDissconnection hostManager) {
         this.serverProtocol = serverProtocol;
@@ -20,6 +21,10 @@ public class NetworkSender implements HostActionsListener, Runnable {
         this.isRunning = false;
     }
 
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
     @Override
     public void run() {
         this.isRunning = true;
@@ -27,6 +32,12 @@ public class NetworkSender implements HostActionsListener, Runnable {
             while (isRunning) {
                 // Blocks until a packet is offered via the HostActionsListener methods
                 Packet packet = packetQueue.take();
+                
+                if (cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
+                    byte[] encrypted = CryptoUtils.encrypt(packet.getPayload(), cryptoKey);
+                    packet = new Packet(packet.getPacketType(), encrypted);
+                }
+                
                 serverProtocol.sendPacket(packet);
                 if (packet.getPacketType() == Packet.PacketType.QUIT) {
                     System.out.println("quit");

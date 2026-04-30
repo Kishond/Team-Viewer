@@ -10,6 +10,7 @@ public class NetworkReciever implements Runnable {
     private final HandleDissconnection hostManager;
 
     private boolean isRunning;
+    private String cryptoKey;
 
     public NetworkReciever(ServerProtocol serverProtocol, RemoteActionListener robotController, HandleDissconnection hostManager) {
         this.serverProtocol = serverProtocol;
@@ -19,12 +20,21 @@ public class NetworkReciever implements Runnable {
         this.isRunning = false;
     }
 
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
     @Override
     public void run() {
         this.isRunning = true;
         try {
             while (isRunning) {
                 Packet packet = serverProtocol.recievePacket();
+                
+                if (packet != null && cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
+                    byte[] decryptedPayload = resources.CryptoUtils.decrypt(packet.getPayload(), cryptoKey);
+                    packet = new Packet(packet.getPacketType(), decryptedPayload);
+                }
 
                 PacketType type = packet.getPacketType();
 

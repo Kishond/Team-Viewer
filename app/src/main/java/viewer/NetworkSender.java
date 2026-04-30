@@ -12,6 +12,7 @@ public class NetworkSender implements ViewerUIListener, Runnable {
     private final BlockingQueue<Packet> packetQueue;
 
     private boolean isRunning;
+    private String cryptoKey;
 
     public NetworkSender(ServerProtocolSender serverProtocol, HandleDissconnection viewerManager) {
         this.serverProtocol = serverProtocol;
@@ -22,12 +23,22 @@ public class NetworkSender implements ViewerUIListener, Runnable {
         this.isRunning = false;
     }
 
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
     @Override
     public void run() {
         this.isRunning = true;
         try {
             while (isRunning) {
                 Packet packet = packetQueue.take();
+                
+                if (cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
+                    byte[] encrypted = CryptoUtils.encrypt(packet.getPayload(), cryptoKey);
+                    packet = new Packet(packet.getPacketType(), encrypted);
+                }
+
                 serverProtocol.sendPacket(packet);
                 
                 // if recieved QUIT packet, stop and notify viewer manager
