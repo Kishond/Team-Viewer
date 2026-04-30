@@ -46,6 +46,8 @@ public class NetworkSender implements HostActionsListener, Runnable {
 
     @Override
     public void queueImage(byte[] imageData) {
+        // Drop any unsent old frames to prevent latency buildup
+        packetQueue.removeIf(packet -> packet.getPacketType() == Packet.PacketType.IMAGE);
         // RobotController calls this to queue a new screenshot
         packetQueue.offer(new Packet(Packet.PacketType.IMAGE, imageData));
     }

@@ -8,12 +8,17 @@ import java.awt.event.InputEvent;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.Iterator;
+import javax.imageio.IIOImage;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
 import javax.imageio.ImageIO;
 import resources.Packet;
 import resources.ServerProtocol;
 
 public class RobotController implements RemoteActionListener {
-    private Robot robot;
+private Robot robot;
     private final HostActionsListener senderListener;
     private final Rectangle screenRect;
     
@@ -38,13 +43,19 @@ public class RobotController implements RemoteActionListener {
         
         this.isCapturing = true;
         this.captureThread = new Thread(() -> {
+            long targetFrameTime = 1000 / 30; // Target 30 FPS (~33ms per frame)
             while (isCapturing) {
+                long startTime = System.currentTimeMillis();
                 byte[] frame = captureScreen();
                 if (frame != null) {
                     senderListener.queueImage(frame);
                 }
                 
-                try { Thread.sleep(10); } catch (InterruptedException e) { break; }
+                long elapsedTime = System.currentTimeMillis() - startTime;
+                long sleepTime = targetFrameTime - elapsedTime;
+                if (sleepTime > 0) {
+                    try { Thread.sleep(sleepTime); } catch (InterruptedException e) { break; }
+                }
             }
         });
         this.captureThread.start();
@@ -58,10 +69,22 @@ public class RobotController implements RemoteActionListener {
     }
 
     private byte[] captureScreen() {
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             ImageOutputStream ios = ImageIO.createImageOutputStream(baos)) {
             BufferedImage screenshot = robot.createScreenCapture(screenRect);
-            // Convert to JPG for significant size reduction
-            ImageIO.write(screenshot, "jpg", baos);
+            
+            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
+            if (writers.hasNext()) {
+                ImageWriter writer = writers.next();
+                ImageWriteParam param = writer.getDefaultWriteParam();
+                if (param.canWriteCompressed()) {
+                    param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                    param.setCompressionQuality(0.3f); // 30% quality drastically reduces latency
+                }
+                writer.setOutput(ios);
+                writer.write(null, new IIOImage(screenshot, null, null), param);
+                writer.dispose();
+            }
             return baos.toByteArray();
         } catch (IOException e) {
             return null;
