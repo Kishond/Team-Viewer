@@ -82,18 +82,26 @@ public class NetworkSender implements ViewerUIListener, Runnable {
     public void sendDisconnect() {
         packetQueue.offer(ServerProtocol.createQuitPacket());
     }
+
+    @Override
+    public void sendFile(String fileName, byte[] fileData) {
+        packetQueue.offer(ServerProtocol.createFilePacket(fileName, fileData));
+    }
     
 }
 
 interface ViewerUIListener {
-    // Mouse Events
+    // mouse events
     void sendMouseMove(int x, int y);
     void sendMouseButton(int button, boolean isPressed); // 1=Left, 2=Middle, 3=Right
     void sendMouseWheel(int rotation);
 
-    // Keyboard Events
+    // keyboard events
     void sendKeyPress(int keyCode, boolean isPressed);
 
-    // Connection Events
+    // connection events
     void sendDisconnect();
+
+    // file transfer
+    void sendFile(String fileName, byte[] fileData);
 }

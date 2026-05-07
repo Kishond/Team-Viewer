@@ -10,6 +10,9 @@ import javax.swing.JFrame;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
+import javax.swing.JButton;
+import javax.swing.JFileChooser;
+import java.io.File;
 import java.awt.event.*;
 
 public class ViewerUI extends JFrame implements RemoteUpdateListener, ConnectionCallback {
@@ -29,14 +32,28 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
 
         this.canvas = new ImagePanel();
         this.canvas.setEnabled(false);
-        this.canvas.setFocusable(true); // Required to capture key events
+        this.canvas.setFocusable(true); 
         this.add(canvas, BorderLayout.CENTER);
+
+        JPanel topPanel = new JPanel();
+        JButton sendFileBtn = new JButton("Send File");
+        sendFileBtn.addActionListener(e -> {
+            JFileChooser chooser = new JFileChooser();
+            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+                File file = chooser.getSelectedFile();
+                try {
+                    byte[] data = java.nio.file.Files.readAllBytes(file.toPath());
+                    networkSender.sendFile(file.getName(), data);
+                } catch (Exception ex) {}
+            }
+        });
+        topPanel.add(sendFileBtn);
+        this.add(topPanel, BorderLayout.NORTH);
 
         setupEventListeners();
     }
 
     private void setupEventListeners() {
-        // Mouse movement and clicks with scaling fix
         canvas.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -63,12 +80,10 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
             }
         });
 
-        // Mouse wheel 
         canvas.addMouseWheelListener(e -> {
             networkSender.sendMouseWheel(e.getWheelRotation());
         });
 
-        // Keyboard events moved to canvas for focus reliability
         canvas.addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
@@ -83,7 +98,7 @@ public class ViewerUI extends JFrame implements RemoteUpdateListener, Connection
     }
 
     /**
-     * Maps local Canvas coordinates to Host screen coordinates 
+     * maps local Canvas coordinates to Host screen coordinates 
      * based on the received image dimensions.
      */
     private void sendScaledMouseCoords(int x, int y) {

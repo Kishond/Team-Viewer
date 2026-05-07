@@ -18,13 +18,17 @@ public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSen
     public static class ButtonData {
         public final int button;
         public final boolean isPressed;
-        public ButtonData(int b, boolean p) { this.button = b; this.isPressed = p; }
+        public ButtonData(int b, boolean p) {
+             this.button = b; this.isPressed = p; 
+            }
     }
 
     public static class KeyData {
         public final int keyCode;
         public final boolean isPressed;
-        public KeyData(int k, boolean p) { this.keyCode = k; this.isPressed = p; }
+        public KeyData(int k, boolean p) { 
+            this.keyCode = k; this.isPressed = p; 
+        }
     }
 
     public ServerProtocol(InputStream inputStream, OutputStream outputStream) {
@@ -132,5 +136,31 @@ public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSen
         int keyCode = buffer.getInt();
         boolean isPressed = buffer.get() == 1;
         return new KeyData(keyCode, isPressed);
+    }
+
+    public static Packet createFilePacket(String fileName, byte[] fileData) {
+        byte[] nameBytes = fileName.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buffer = ByteBuffer.allocate(4 + nameBytes.length + fileData.length);
+        buffer.putInt(nameBytes.length);
+        buffer.put(nameBytes);
+        buffer.put(fileData);
+        return new Packet(PacketType.FILE, buffer.array());
+    }
+
+    public static String getFileNameFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        int nameLen = buffer.getInt();
+        byte[] nameBytes = new byte[nameLen];
+        buffer.get(nameBytes);
+        return new String(nameBytes, StandardCharsets.UTF_8);
+    }
+
+    public static byte[] getFileDataFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        int nameLen = buffer.getInt();
+        buffer.position(4 + nameLen);
+        byte[] fileData = new byte[buffer.remaining()];
+        buffer.get(fileData);
+        return fileData;
     }
 }

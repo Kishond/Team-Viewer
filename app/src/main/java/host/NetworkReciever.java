@@ -1,11 +1,16 @@
 package host;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import resources.*;
 import resources.Packet.PacketType;
 
 public class NetworkReciever implements Runnable {
     private final ServerProtocol serverProtocol;
+    
+    // Configurable static path for incoming files on the Host
+    public static String DOWNLOAD_DIR = "downloads";
     private final RemoteActionListener robotController;
     private final HandleDissconnection hostManager;
 
@@ -54,6 +59,19 @@ public class NetworkReciever implements Runnable {
                     case QUIT:
                         this.isRunning = false;
                         hostManager.handleQuitRequest();
+                        break;
+                    case FILE:
+                        String fileName = ServerProtocol.getFileNameFromPacket(packet);
+                        byte[] fileData = ServerProtocol.getFileDataFromPacket(packet);
+                        try {
+                            java.nio.file.Path dirPath = Paths.get(DOWNLOAD_DIR);
+                            if (!Files.exists(dirPath)) {
+                                Files.createDirectories(dirPath);
+                            }
+                            Files.write(dirPath.resolve(fileName), fileData);
+                        } catch (IOException e) {
+                            System.err.println(e.getMessage());
+                        }
                         break;
                     default:
                         break;

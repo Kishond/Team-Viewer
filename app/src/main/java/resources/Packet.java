@@ -14,7 +14,8 @@ public class Packet {
         MOUSE_WHEEL((byte) 9),
         MOUSE_BUTTON((byte) 10),
         KEY_PRESS((byte) 11),
-        QUIT((byte)12);
+        QUIT((byte)12),
+        FILE((byte)13);
 
         private final byte byteSign;
 

@@ -30,7 +30,7 @@ public class NetworkSender implements HostActionsListener, Runnable {
         this.isRunning = true;
         try {
             while (isRunning) {
-                // Blocks until a packet is offered via the HostActionsListener methods
+                // blocking method until packet is ready
                 Packet packet = packetQueue.take();
                 
                 if (cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
@@ -57,15 +57,14 @@ public class NetworkSender implements HostActionsListener, Runnable {
 
     @Override
     public void queueImage(byte[] imageData) {
-        // Drop any unsent old frames to prevent latency buildup
+        // droping unsent old frames to remove unnecssarry traffic
         packetQueue.removeIf(packet -> packet.getPacketType() == Packet.PacketType.IMAGE);
-        // RobotController calls this to queue a new screenshot
         packetQueue.offer(new Packet(Packet.PacketType.IMAGE, imageData));
     }
 
     @Override
     public void queueDisconnect() {
-        // Queues a QUIT packet to gracefully close the session
+        // queues a QUIT packet to close the session
         packetQueue.offer(new Packet(Packet.PacketType.QUIT));
     }
 
