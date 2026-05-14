@@ -5,8 +5,9 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 
-import resources.*;
+import resources.Packet;
 import resources.Packet.PacketType;
+import resources.ServerProtocol;
 
 
 public class ClientHandler implements Runnable {
@@ -71,6 +72,7 @@ public class ClientHandler implements Runnable {
         RelayServer.addAWaitingHost(sessionKey, this);
         System.out.println("Host has been added to waiting list");
 
+        RelayServer.logConnection(sessionKey, this.socket.getInetAddress().getHostAddress());
         hostPendingConnection();
 
         ControlSession controlSession = RelayServer.getControlSessionByKey(sessionKey);
@@ -114,6 +116,7 @@ public class ClientHandler implements Runnable {
 
         this.controlSession = new ControlSession(this, hostHandler);
         RelayServer.addAnActiveSession(sessionKey, this.controlSession);
+        RelayServer.logViewerJoining(sessionKey, this.socket.getInetAddress().getHostAddress());
         
         hostHandler.serverProtocol.sendSuccessPacket("connected to viewer!"); 
         hostHandler.serverProtocol.recievePacket();
@@ -162,6 +165,7 @@ public class ClientHandler implements Runnable {
             if (getInputStream() != null) getInputStream().close();
             if (getOutputStream() != null) getOutputStream().close();
             if (socket != null) socket.close();
+            RelayServer.closeSession(this.controlSession.getSessionKey());
         } catch (IOException e) {
         System.err.println("Error while closing: " + e.getMessage());
         }

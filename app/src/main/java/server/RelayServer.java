@@ -5,12 +5,15 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
+import server.DatabaseManager;
 
 public class RelayServer {
     private static final int LISTENING_PORT = 5000;
+
     private static Map<String, ClientHandler> waitingHosts;
     private static Map<String, ControlSession> activeSessions;
-    
+
+    private static DatabaseManager databaseManager;
 
     public static void main(String[] args) {
         System.out.println("server has started");
@@ -20,7 +23,8 @@ public class RelayServer {
     private static void startServer(int listeningPort) {
         waitingHosts = new HashMap<String, ClientHandler>();
         activeSessions = new HashMap<String, ControlSession>();
-        
+
+        databaseManager = new DatabaseManager();
         try (ServerSocket serverSocket = new ServerSocket(listeningPort)) {
             System.out.println("The server is litening on port: " + listeningPort);
 
@@ -38,7 +42,22 @@ public class RelayServer {
         }
     } 
 
-    
+    public static void logConnection(String sessionKey, String hostIp) {
+        System.out.println("[DB] Session created: " + sessionKey + " (Host: " + hostIp + ")");
+        databaseManager.logConnection(sessionKey, hostIp);
+    }
+
+    public static void logViewerJoining(String sessionKey, String viewerIp) {
+        System.out.println("[DB] Session activated: " + sessionKey + " (Viewer: " + viewerIp + ")");
+        databaseManager.logViewerJoining(sessionKey, viewerIp);
+    }
+
+    public static void closeSession(String sessionKey) {
+        System.out.println("[DB] Session closed: " + sessionKey);
+        databaseManager.closeSession(sessionKey);
+    }
+
+
     public static boolean isKeyInWaitingHosts(String keySession) {
         return waitingHosts.containsKey(keySession);
     }
