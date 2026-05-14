@@ -30,15 +30,14 @@ public class DatabaseManager {
             pstmt.setTimestamp(4, new Timestamp(System.currentTimeMillis()));
             
             pstmt.executeUpdate();
-            System.out.println("[DB] Session created: " + sessionKey + " (Host: " + hostIp + ")");
+            System.out.println("DB Session created: " + sessionKey+ " " + hostIp);
             
         } catch (SQLException e) {
-            System.err.println("[DB Error] Error inserting host: " + e.getMessage());
+            System.err.println("DB Error inserting host: " + e.getMessage());
         }
     }
 
     public void logViewerJoining(String sessionKey, String viewerIp) {
-        // We only update rows that are currently 'WAITING' to ensure we don't overwrite active sessions
         String sql = "UPDATE Sessions SET ViewerIP = ?, Status = 'ACTIVE' WHERE SessionKey = ? AND Status = 'WAITING'";
         
         try (Connection conn = DriverManager.getConnection(dbPath);
@@ -49,9 +48,9 @@ public class DatabaseManager {
             
             int rowsAffected = pstmt.executeUpdate();
             if (rowsAffected > 0) {
-                System.out.println("[DB] Session activated: " + sessionKey + " (Viewer: " + viewerIp + ")");
+                System.out.println("seesion activated" + sessionKey+ " " + viewerIp);
             } else {
-                System.out.println("[DB] Warning: No waiting session found for key: " + sessionKey);
+                System.out.println("no session found" + sessionKey+ " " + viewerIp);
             }
             
         } catch (SQLException e) {
@@ -67,10 +66,10 @@ public class DatabaseManager {
             
             pstmt.setString(1, sessionKey);
             pstmt.executeUpdate();
-            System.out.println("[DB] Session closed: " + sessionKey);
+            System.out.println("DB Session closed: " + sessionKey);
             
         } catch (SQLException e) {
-            System.err.println("[DB Error] Error closing session: " + e.getMessage());
+            System.err.println("DB Error Error closing session: " + e.getMessage());
         }
     }
 }
