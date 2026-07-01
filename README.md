@@ -59,3 +59,13 @@
 
 כדי לסיים את החיבור בצורה בטוחה, המארח יכול ללחוץ על כפתור ה-"Stop Sharing" בממשק שלו, או לחלופין הצופה יכול פשוט לסגור את החלון שלו באמצעות ה-X (מה שישלח חבילת QUIT מסודרת ויסגור את התהליכים בשני הצדדים).
 
+## 📚 ביבליוגרפיה (מקורות מידע - APA)
+
+*   Google. (n.d.). *Guava: Google core libraries for Java*. GitHub. https://github.com/google/guava
+*   Gordijn, M. (n.d.). *UCanAccess: A pure Java JDBC driver for Microsoft Access*. SourceForge. http://ucanaccess.sourceforge.net/site.html
+*   National Institute of Standards and Technology. (2001). *Advanced Encryption Standard (AES)* (Federal Information Processing Standards Publication 197). U.S. Department of Commerce. https://doi.org/10.6028/NIST.FIPS.197
+*   Oracle. (n.d.-a). *Class Robot (Java Platform SE 21)*. Oracle Help Center. https://docs.oracle.com/en/java/javase/21/docs/api/java.desktop/java/awt/Robot.html
+*   Oracle. (n.d.-b). *Java Cryptography Architecture (JCA) reference guide*. Oracle Help Center. https://docs.oracle.com/en/java/javase/21/security/java-cryptography-architecture-jca-reference-guide.html
+*   Oracle. (n.d.-c). *Lesson: All about sockets*. The Java™ Tutorials. https://docs.oracle.com/javase/tutorial/networking/sockets/index.html
+*   Oracle. (n.d.-d). *Writing Image I/O applications*. Oracle Help Center. https://docs.oracle.com/javase/8/docs/technotes/guides/imageio/spec/apps.gui.html
+*   The JUnit Team. (n.d.). *JUnit 5 User Guide*. JUnit.org. https://junit.org/junit5/docs/current/user-guide/

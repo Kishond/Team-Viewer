@@ -5,7 +5,6 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
-import server.DatabaseManager;
 
 public class RelayServer {
     private static final int LISTENING_PORT = 5000;

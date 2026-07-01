@@ -1,0 +1,1981 @@
+
+================================================================================
+FILE: app\src\main\java\App.java
+================================================================================
+
+public class App {
+    
+    public static void main(String[] args) {
+        System.out.println("Hello World");
+    }
+}
+
+
+================================================================================
+FILE: app\src\main\java\host\HostManager.java
+================================================================================
+
+package host;
+
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.Socket;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+
+import resources.*;
+import resources.Packet.PacketType;
+
+public class HostManager implements RegisterableToHost, HandleDissconnection {
+
+    private static final String SERVER_IP = "127.0.0.1";
+    private static final int SERVER_PORT = 5000;
+
+    private final ServerProtocol serverProtocol;
+    private final Socket hostSocket;
+    
+    private final RobotController robotController;
+    private HostUI hostUI;
+    
+    private NetworkSender networkSender;
+    private NetworkReciever networkReciever;
+
+    private Thread networkSenderThread;
+    private Thread networkRecieverThread;
+    private Thread registrationThread;
+
+    private boolean isRegistered = false;
+
+    public HostManager(String serverIP, int serverPort) throws IOException {
+        this.hostSocket = new Socket(serverIP, serverPort);
+        
+        DataOutputStream outputStream = new DataOutputStream(this.hostSocket.getOutputStream());
+        DataInputStream inputStream = new DataInputStream(this.hostSocket.getInputStream());
+
+        this.serverProtocol = new ServerProtocol(inputStream, outputStream);
+        
+        // Initialize the sender and the controller
+        this.networkSender = new NetworkSender(this.serverProtocol, this);
+        this.robotController = new RobotController(this.networkSender);
+    }
+
+    private void startHost() {
+        this.hostUI = new HostUI(this);
+        
+        this.networkReciever = new NetworkReciever(this.serverProtocol, this.robotController, this);
+
+        this.networkSenderThread = new Thread(this.networkSender);
+        this.networkRecieverThread = new Thread(this.networkReciever);
+
+        this.hostUI.showUI();
+    }
+
+    @Override
+    public void registerHost(Supplier<String> sessionKeySupplier, HostRegistrationCallback callback) {
+        this.registrationThread = new Thread(() -> {
+            try {
+                // 1. Identification
+                serverProtocol.sendPacket(new Packet(PacketType.HOST));
+                serverProtocol.recievePacket();
+
+                boolean keyAccepted = false;
+                String finalKey = "";
+
+                while (!keyAccepted) {
+                    finalKey = sessionKeySupplier.get();
+                    if (finalKey == null) {
+                        return; 
+                    }
+
+                    serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, finalKey.getBytes()));
+                    Packet response = serverProtocol.recievePacket();
+                    String serverMsg = new String(response.getPayload());
+
+                    if (serverMsg.contains("session Key is in use")) {
+                        callback.onRegistrationError("Key already in use. Try another.");
+                    } else {
+                        keyAccepted = true;
+                    }
+                }
+
+                this.isRegistered = true;
+                callback.onRegistrationSuccess(finalKey);
+
+                Packet viewerFoundPacket = serverProtocol.recievePacket(); 
+
+                serverProtocol.sendPacket(new Packet(PacketType.SUCCESS));
+                if (viewerFoundPacket.getPacketType() != PacketType.SUCCESS) {
+                    handleConnectionLost();
+                    return;
+                }
+                
+                // the timeout is for avoiding a race between recieving success packets
+                try {
+                    TimeUnit.SECONDS.sleep(5); 
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+
+                this.networkSender.setCryptoKey(finalKey);
+                this.networkReciever.setCryptoKey(finalKey);
+
+                this.networkSenderThread.start();
+                this.networkRecieverThread.start();
+                
+                this.robotController.startLiveCapture();
+
+                callback.onConnection();
+            } catch (IOException e) {
+                callback.onRegistrationError(e.getMessage());
+            }
+        });
+        this.registrationThread.start();
+    }
+
+    @Override
+    public void handleConnectionLost() {
+        cleanup("Connection to server lost");
+    }
+
+    @Override
+    public void handleQuitRequest() {
+        cleanup("Session ended by user");
+    }
+
+    private void cleanup(String reason) {
+        System.out.println("Cleaning up: " + reason);
+        this.networkSender.queueDisconnect();
+        try {
+            this.networkReciever.setRunning(false);
+            while (this.networkSender.isRunning()) {}
+            if (hostSocket != null) {
+                if (!hostSocket.isClosed()) {
+                    hostSocket.close();
+                }
+            }
+
+            if (networkSenderThread != null) {
+                networkSenderThread.interrupt();
+            }
+
+            if (networkRecieverThread != null) {
+                networkRecieverThread.interrupt();
+            }
+
+            if (registrationThread != null) {
+                registrationThread.interrupt();
+            }
+            
+            if (robotController != null) {
+                robotController.stopLiveCapture();
+            }
+
+            if (this.hostUI != null) {
+                this.hostUI.onSessionClosed(reason);
+            }
+
+            this.isRegistered = false;
+        } catch (IOException e) {
+            System.err.println("Cleanup error: " + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        try {
+            HostManager hostManager = new HostManager(SERVER_IP, SERVER_PORT);
+            hostManager.startHost();
+        } catch (IOException e) {
+            System.err.println("Could not connect to Relay Server: " + e.getMessage());
+        }
+    }
+}
+
+interface HandleDissconnection {
+    public void handleConnectionLost();
+    public void handleQuitRequest();
+}
+
+interface RegisterableToHost {
+    void registerHost(Supplier<String> sessionKeySupplier, HostRegistrationCallback callback);
+}
+
+================================================================================
+FILE: app\src\main\java\host\HostUI.java
+================================================================================
+
+package host;
+
+import java.awt.BorderLayout;
+import java.awt.Font;
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+
+public class HostUI extends JFrame implements HostRegistrationCallback {
+
+    private final RegisterableToHost hostManager;
+    private final JLabel statusLabel;
+    private final JLabel keyLabel;
+    private final JButton stopButton;
+
+    public HostUI(RegisterableToHost hostManager) {
+        this.hostManager = hostManager;
+
+        this.setTitle("Remote Desktop Host");
+        this.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        this.setSize(400, 250);
+        this.setLayout(new BorderLayout(10, 10));
+
+        // UI Components
+        this.statusLabel = new JLabel("Status: Disconnected", SwingConstants.CENTER);
+        
+        this.keyLabel = new JLabel("Session Key: ----", SwingConstants.CENTER);
+        this.keyLabel.setFont(new Font("Monospaced", Font.BOLD, 24));
+
+        this.stopButton = new JButton("Stop Sharing");
+        this.stopButton.setEnabled(false);
+
+        // Layout
+        JPanel centerPanel = new JPanel(new BorderLayout());
+        centerPanel.add(statusLabel, BorderLayout.NORTH);
+        centerPanel.add(keyLabel, BorderLayout.CENTER);
+
+        this.add(centerPanel, BorderLayout.CENTER);
+        this.add(stopButton, BorderLayout.SOUTH);
+
+        setupEventListeners();
+    }
+
+    private void setupEventListeners() {
+        stopButton.addActionListener(e -> {
+            ((HandleDissconnection)hostManager).handleQuitRequest();
+        });
+    }
+
+    public void showUI() {
+        SwingUtilities.invokeLater(() -> {
+            this.setVisible(true);
+            // Prompt the user for a key and start registration
+            promptForRegistration();
+        });
+    }
+
+    private void promptForRegistration() {
+        hostManager.registerHost(() -> {
+            return JOptionPane.showInputDialog(this, "Set your Session Key:");
+        }, this);
+    }
+
+    @Override
+    public void onRegistrationSuccess(String sessionKey) {
+        SwingUtilities.invokeLater(() -> {
+            this.statusLabel.setText("Status: Waiting for Viewer...");
+            this.keyLabel.setText(sessionKey);
+            this.stopButton.setEnabled(true);
+        });
+    }
+
+    @Override
+    public void onRegistrationError(String message) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, "Registration Error: " + message);
+            promptForRegistration(); // Retry
+        });
+    }
+
+    public void onSessionClosed(String reason) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, "Session Ended: " + reason);
+            this.dispose();
+        });
+    }
+
+    @Override
+    public void onConnection() {
+    SwingUtilities.invokeLater(() -> {
+        this.statusLabel.setText("Status: Streaming to Viewer");
+        this.statusLabel.setForeground(java.awt.Color.GREEN);
+    });
+}
+}
+
+interface HostRegistrationCallback {
+    void onRegistrationSuccess(String sessionKey);
+    void onRegistrationError(String message);
+    void onConnection();
+}
+
+================================================================================
+FILE: app\src\main\java\host\NetworkReciever.java
+================================================================================
+
+package host;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import resources.*;
+import resources.Packet.PacketType;
+
+public class NetworkReciever implements Runnable {
+    private final ServerProtocol serverProtocol;
+    
+    // Configurable static path for incoming files on the Host
+    public static String DOWNLOAD_DIR = "downloads";
+    private final RemoteActionListener robotController;
+    private final HandleDissconnection hostManager;
+
+    private boolean isRunning;
+    private String cryptoKey;
+
+    public NetworkReciever(ServerProtocol serverProtocol, RemoteActionListener robotController, HandleDissconnection hostManager) {
+        this.serverProtocol = serverProtocol;
+        this.robotController = robotController;
+        this.hostManager = hostManager;
+        
+        this.isRunning = false;
+    }
+
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
+    @Override
+    public void run() {
+        this.isRunning = true;
+        try {
+            while (isRunning) {
+                Packet packet = serverProtocol.recievePacket();
+                
+                if (packet != null && cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
+                    byte[] decryptedPayload = resources.CryptoUtils.decrypt(packet.getPayload(), cryptoKey);
+                    packet = new Packet(packet.getPacketType(), decryptedPayload);
+                }
+
+                PacketType type = packet.getPacketType();
+
+                switch (type) {
+                    case MOUSE_MOVE:
+                        robotController.onMouseMove(packet);
+                        break;
+                    case MOUSE_BUTTON:
+                        robotController.onMouseButton(packet);
+                        break;
+                    case MOUSE_WHEEL:
+                        robotController.onMouseWheel(packet);
+                        break;
+                    case KEY_PRESS:
+                        robotController.onKeyPress(packet);
+                        break;
+                    case QUIT:
+                        this.isRunning = false;
+                        hostManager.handleQuitRequest();
+                        break;
+                    case FILE:
+                        String fileName = ServerProtocol.getFileNameFromPacket(packet);
+                        byte[] fileData = ServerProtocol.getFileDataFromPacket(packet);
+                        try {
+                            java.nio.file.Path dirPath = Paths.get(DOWNLOAD_DIR);
+                            if (!Files.exists(dirPath)) {
+                                Files.createDirectories(dirPath);
+                            }
+                            Files.write(dirPath.resolve(fileName), fileData);
+                        } catch (IOException e) {
+                            System.err.println(e.getMessage());
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+        } catch (IOException e) {
+            if (isRunning) {
+                hostManager.handleConnectionLost();
+            }
+        }
+    }
+
+    public boolean isRunning() {
+        return this.isRunning;
+    }
+
+    public void setRunning(boolean isRunning) {
+        this.isRunning = isRunning;
+    }
+}
+
+================================================================================
+FILE: app\src\main\java\host\NetworkSender.java
+================================================================================
+
+package host;
+
+import java.io.IOException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import resources.*;
+
+public class NetworkSender implements HostActionsListener, Runnable {
+    private final ServerProtocolSender serverProtocol;
+    private final HandleDissconnection hostManager;
+    
+    private final BlockingQueue<Packet> packetQueue;
+    private volatile boolean isRunning;
+    private String cryptoKey;
+
+    public NetworkSender(ServerProtocolSender serverProtocol, HandleDissconnection hostManager) {
+        this.serverProtocol = serverProtocol;
+        this.hostManager = hostManager;
+        
+        this.packetQueue = new LinkedBlockingQueue<>();
+        this.isRunning = false;
+    }
+
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
+    @Override
+    public void run() {
+        this.isRunning = true;
+        try {
+            while (isRunning) {
+                // blocking method until packet is ready
+                Packet packet = packetQueue.take();
+                
+                if (cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
+                    byte[] encrypted = CryptoUtils.encrypt(packet.getPayload(), cryptoKey);
+                    packet = new Packet(packet.getPacketType(), encrypted);
+                }
+                
+                serverProtocol.sendPacket(packet);
+                if (packet.getPacketType() == Packet.PacketType.QUIT) {
+                    System.out.println("quit");
+                    serverProtocol.sendPacket(new Packet(Packet.PacketType.QUIT));
+                    System.out.println("sent");
+                    isRunning = false;
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
+            if (isRunning) {
+                hostManager.handleConnectionLost();
+            }
+        }
+    }
+
+    @Override
+    public void queueImage(byte[] imageData) {
+        // droping unsent old frames to remove unnecssarry traffic
+        packetQueue.removeIf(packet -> packet.getPacketType() == Packet.PacketType.IMAGE);
+        packetQueue.offer(new Packet(Packet.PacketType.IMAGE, imageData));
+    }
+
+    @Override
+    public void queueDisconnect() {
+        // queues a QUIT packet to close the session
+        packetQueue.offer(new Packet(Packet.PacketType.QUIT));
+    }
+
+    public boolean isRunning() {
+        return this.isRunning;
+    }
+}
+
+interface HostActionsListener {
+    /**
+     * Sends the captured screen image to the viewer.
+     */
+    void queueImage(byte[] imageData);
+
+    /**
+     * Notifies the server and viewer that the host is disconnecting.
+     */
+    void queueDisconnect();
+}
+
+================================================================================
+FILE: app\src\main\java\host\RobotController.java
+================================================================================
+
+package host;
+
+import java.awt.AWTException;
+import java.awt.Rectangle;
+import java.awt.Robot;
+import java.awt.Toolkit;
+import java.awt.event.InputEvent;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.Iterator;
+import javax.imageio.IIOImage;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+import javax.imageio.ImageIO;
+import resources.Packet;
+import resources.ServerProtocol;
+
+public class RobotController implements RemoteActionListener {
+private Robot robot;
+    private final HostActionsListener senderListener;
+    private final Rectangle screenRect;
+    
+    private Thread captureThread;
+    private boolean isCapturing;
+
+    public RobotController(HostActionsListener senderListener) {
+        this.senderListener = senderListener;
+        this.isCapturing = false;
+        // Get the dimensions of the primary screen
+        this.screenRect = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
+
+        try {
+            this.robot = new Robot();
+        } catch (AWTException e) {
+            System.err.println("Robot Error: " + e.getMessage());
+        }
+    }
+
+    public void startLiveCapture() {
+        if (isCapturing) return;
+        
+        this.isCapturing = true;
+        this.captureThread = new Thread(() -> {
+            long targetFrameTime = 1000 / 30; // Target 30 FPS (~33ms per frame)
+            while (isCapturing) {
+                long startTime = System.currentTimeMillis();
+                byte[] frame = captureScreen();
+                if (frame != null) {
+                    senderListener.queueImage(frame);
+                }
+                
+                long elapsedTime = System.currentTimeMillis() - startTime;
+                long sleepTime = targetFrameTime - elapsedTime;
+                if (sleepTime > 0) {
+                    try { Thread.sleep(sleepTime); } catch (InterruptedException e) { break; }
+                }
+            }
+        });
+        this.captureThread.start();
+    }
+
+    public void stopLiveCapture() {
+        this.isCapturing = false;
+        if (this.captureThread != null) {
+            this.captureThread.interrupt();
+        }
+    }
+
+    private byte[] captureScreen() {
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             ImageOutputStream ios = ImageIO.createImageOutputStream(baos)) {
+            BufferedImage screenshot = robot.createScreenCapture(screenRect);
+            
+            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
+            if (writers.hasNext()) {
+                ImageWriter writer = writers.next();
+                ImageWriteParam param = writer.getDefaultWriteParam();
+                if (param.canWriteCompressed()) {
+                    param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                    param.setCompressionQuality(0.3f); // 30% quality drastically reduces latency
+                }
+                writer.setOutput(ios);
+                writer.write(null, new IIOImage(screenshot, null, null), param);
+                writer.dispose();
+            }
+            return baos.toByteArray();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    @Override
+    public void onMouseMove(Packet packet) {
+        int[] coords = ServerProtocol.getCordsFromPacket(packet);
+        robot.mouseMove(coords[0], coords[1]);
+    }
+
+    @Override
+    public void onMouseButton(Packet packet) {
+        ServerProtocol.ButtonData data = ServerProtocol.getButtonFromPacket(packet);
+        
+        int mask;
+        switch (data.button) {
+            case 3:
+                mask = InputEvent.BUTTON3_DOWN_MASK;
+                break;
+            case 2:
+                mask = InputEvent.BUTTON2_DOWN_MASK;
+                break;
+            case 1:
+            default:
+                mask = InputEvent.BUTTON1_DOWN_MASK;
+                break;
+        }
+
+        if (data.isPressed) {
+            robot.mousePress(mask);
+        } else {
+            robot.mouseRelease(mask);
+        }
+    }
+
+    @Override
+    public void onMouseWheel(Packet packet) {
+        int rotation = ServerProtocol.getWheelRotationFromPacket(packet);
+        robot.mouseWheel(rotation);
+    }
+
+    @Override
+    public void onKeyPress(Packet packet) {
+        ServerProtocol.KeyData data = ServerProtocol.getKeysFromPacket(packet);
+        try {
+            if (data.isPressed) {
+                robot.keyPress(data.keyCode);
+            } else {
+                robot.keyRelease(data.keyCode);
+            }
+        } catch (IllegalArgumentException e) {
+            System.out.println(e.getMessage());
+        }
+    }
+}
+
+interface RemoteActionListener {
+    void onMouseMove(Packet packet);
+    void onMouseButton(Packet packet);
+    void onMouseWheel(Packet packet);
+    void onKeyPress(Packet packet);
+}
+
+================================================================================
+FILE: app\src\main\java\resources\CryptoUtils.java
+================================================================================
+
+package resources;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.MessageDigest;
+import java.util.Arrays;
+
+public class CryptoUtils {
+    private static final String ALGORITHM = "AES";
+
+    private static SecretKeySpec generateKey(String key) throws Exception {
+        MessageDigest sha = MessageDigest.getInstance("SHA-256");
+        byte[] keyBytes = sha.digest(key.getBytes("UTF-8"));
+        keyBytes = Arrays.copyOf(keyBytes, 16); // Extract 128-bit key
+        return new SecretKeySpec(keyBytes, ALGORITHM);
+    }
+
+    public static byte[] encrypt(byte[] data, String secret) {
+        try {
+            SecretKeySpec secretKey = generateKey(secret);
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+            return cipher.doFinal(data);
+        } catch (Exception e) {
+            return data; // Fallback to raw data if encryption fails
+        }
+    }
+
+    public static byte[] decrypt(byte[] data, String secret) {
+        try {
+            SecretKeySpec secretKey = generateKey(secret);
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(Cipher.DECRYPT_MODE, secretKey);
+            return cipher.doFinal(data);
+        } catch (Exception e) {
+            return data; // Fallback to raw data if decryption fails
+        }
+    }
+}
+
+================================================================================
+FILE: app\src\main\java\resources\Packet.java
+================================================================================
+
+package resources;
+
+public class Packet {
+    public enum PacketType {
+        HOST((byte)0),
+        VIEWER((byte)1),
+        SESSION_KEY((byte)2),
+        IMAGE((byte)3),
+        COMMAND((byte)4),
+        ERR_MESSAGE((byte)5),
+        SUCCESS((byte)6),
+        CONNECTION_FAILED((byte) 7),
+        MOUSE_MOVE((byte) 8),
+        MOUSE_WHEEL((byte) 9),
+        MOUSE_BUTTON((byte) 10),
+        KEY_PRESS((byte) 11),
+        QUIT((byte)12),
+        FILE((byte)13);
+
+        private final byte byteSign;
+
+        private PacketType(byte byteSign) {
+            this.byteSign = byteSign;
+        }
+
+        public byte getByteSign() {
+            return this.byteSign;
+        }
+
+        public static PacketType getPacketType(byte b) {
+            for (PacketType packetType : PacketType.values()) {
+                if (packetType.getByteSign() == b) {
+                    return packetType;
+                }
+            }
+            throw new IllegalArgumentException("No packet type with this byte");
+        }
+    }
+
+    private PacketType packetType;
+    private byte[] payload;
+
+    public Packet(PacketType packetType, byte[] payLoad) {
+        this.packetType = packetType;
+        this.payload = payLoad;
+    }
+
+    public Packet(PacketType packetType) {
+        this(packetType, new byte[]{});
+    }
+
+    public PacketType getPacketType() {
+        return this.packetType;
+    }
+
+    public byte[] getPayload() {
+        return this.payload;
+    }
+
+    public int getPayloadLength() {
+        return this.payload.length;
+    }
+}
+
+================================================================================
+FILE: app\src\main\java\resources\ServerProtocol.java
+================================================================================
+
+package resources;
+
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+
+import resources.Packet.PacketType;
+
+public class ServerProtocol implements ServerProtocolReciever, ServerProtocolSender {
+    private final DataInputStream inputStream;
+    private final DataOutputStream outputStream;
+
+    // --- DATA HOLDERS for extraction ---
+    public static class ButtonData {
+        public final int button;
+        public final boolean isPressed;
+        public ButtonData(int b, boolean p) {
+             this.button = b; this.isPressed = p; 
+            }
+    }
+
+    public static class KeyData {
+        public final int keyCode;
+        public final boolean isPressed;
+        public KeyData(int k, boolean p) { 
+            this.keyCode = k; this.isPressed = p; 
+        }
+    }
+
+    public ServerProtocol(InputStream inputStream, OutputStream outputStream) {
+        this.inputStream = new DataInputStream(inputStream);
+        this.outputStream = new DataOutputStream(outputStream);
+    }
+
+    public Packet recievePacket() throws IOException {
+        int payloadLength = this.inputStream.readInt();
+        byte byteSign = this.inputStream.readByte();
+        byte[] payload = new byte[payloadLength];
+
+        this.inputStream.readFully(payload);
+        return new Packet(PacketType.getPacketType(byteSign), payload);
+    }
+
+    public void sendPacket(Packet packet) throws IOException {
+        this.outputStream.writeInt(packet.getPayload().length);
+        this.outputStream.writeByte(packet.getPacketType().getByteSign());
+        this.outputStream.write(packet.getPayload());
+
+        this.outputStream.flush();
+    }
+
+    public String getPacketStringPayload() throws IOException {
+    Packet packet = recievePacket();
+    if (packet.getPacketType() != Packet.PacketType.SESSION_KEY) {
+        throw new IllegalArgumentException("Expected SESSION_KEY but got: " + packet.getPacketType());
+    }
+    return new String(packet.getPayload(), StandardCharsets.UTF_8);
+}
+
+    public void sendErrStringPacket(String errMsg) throws IOException {
+        Packet packet = new Packet(Packet.PacketType.ERR_MESSAGE, errMsg.getBytes(StandardCharsets.UTF_8));
+        sendPacket(packet);
+    }
+
+    public void sendSuccessPacket(String successMsg) throws IOException {
+        Packet packet = new Packet(Packet.PacketType.SUCCESS, successMsg.getBytes(StandardCharsets.UTF_8));
+        sendPacket(packet);
+    }
+
+    public DataInputStream getInputStream() {
+        return this.inputStream;
+    }
+
+    public DataOutputStream getOutputStream() {
+        return this.outputStream;
+    }
+
+    // host side
+
+    public static Packet createCordsPacket(int x, int y) {
+        ByteBuffer buffer = ByteBuffer.allocate(8);
+        buffer.putInt(x);
+        buffer.putInt(y);
+        return new Packet(PacketType.MOUSE_MOVE, buffer.array());
+    }
+
+    public static Packet createMouseButtonPacket(int button, boolean isPressed) {
+        ByteBuffer buffer = ByteBuffer.allocate(5); 
+        buffer.putInt(button);
+        buffer.put((byte) (isPressed ? 1 : 0));
+        return new Packet(PacketType.MOUSE_BUTTON, buffer.array());
+    }
+
+    public static Packet createMouseWheelPacket(int rotation) {
+        ByteBuffer buffer = ByteBuffer.allocate(4);
+        buffer.putInt(rotation);
+        return new Packet(PacketType.MOUSE_WHEEL, buffer.array());
+    }
+
+    public static Packet createKeyPressPacket(int keyCode, boolean isPressed) {
+        ByteBuffer buffer = ByteBuffer.allocate(5);
+        buffer.putInt(keyCode);
+        buffer.put((byte) (isPressed ? 1 : 0));
+        return new Packet(PacketType.KEY_PRESS, buffer.array());
+    }
+
+    public static Packet createQuitPacket() {
+        return new Packet(PacketType.QUIT, new byte[0]);
+    }
+
+    // viewer side
+
+    public static int[] getCordsFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        return new int[]{buffer.getInt(), buffer.getInt()};
+    }
+
+    public static ButtonData getButtonFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        int button = buffer.getInt();
+        boolean isPressed = buffer.get() == 1;
+        return new ButtonData(button, isPressed);
+    }
+
+    public static int getWheelRotationFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        return buffer.getInt();
+    }
+
+    public static KeyData getKeysFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        int keyCode = buffer.getInt();
+        boolean isPressed = buffer.get() == 1;
+        return new KeyData(keyCode, isPressed);
+    }
+
+    public static Packet createFilePacket(String fileName, byte[] fileData) {
+        byte[] nameBytes = fileName.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buffer = ByteBuffer.allocate(4 + nameBytes.length + fileData.length);
+        buffer.putInt(nameBytes.length);
+        buffer.put(nameBytes);
+        buffer.put(fileData);
+        return new Packet(PacketType.FILE, buffer.array());
+    }
+
+    public static String getFileNameFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        int nameLen = buffer.getInt();
+        byte[] nameBytes = new byte[nameLen];
+        buffer.get(nameBytes);
+        return new String(nameBytes, StandardCharsets.UTF_8);
+    }
+
+    public static byte[] getFileDataFromPacket(Packet packet) {
+        ByteBuffer buffer = ByteBuffer.wrap(packet.getPayload());
+        int nameLen = buffer.getInt();
+        buffer.position(4 + nameLen);
+        byte[] fileData = new byte[buffer.remaining()];
+        buffer.get(fileData);
+        return fileData;
+    }
+}
+
+================================================================================
+FILE: app\src\main\java\resources\ServerProtocolReciever.java
+================================================================================
+
+package resources;
+
+import java.io.IOException;
+
+public interface ServerProtocolReciever {
+    public Packet recievePacket() throws IOException;
+    public String getPacketStringPayload() throws IOException;
+}
+
+
+================================================================================
+FILE: app\src\main\java\resources\ServerProtocolSender.java
+================================================================================
+
+package resources;
+
+import java.io.IOException;
+
+public interface ServerProtocolSender {
+    public void sendPacket(Packet packet) throws IOException;
+    public void sendErrStringPacket(String errMsg) throws IOException;
+    public void sendSuccessPacket(String successMsg) throws IOException;
+}
+
+
+================================================================================
+FILE: app\src\main\java\server\ClientHandler.java
+================================================================================
+
+package server;
+
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.Socket;
+
+import resources.Packet;
+import resources.Packet.PacketType;
+import resources.ServerProtocol;
+
+
+public class ClientHandler implements Runnable {
+    private final Socket socket;
+
+    private ServerProtocol serverProtocol;
+
+    private ClientType clientType = null;
+    private volatile boolean isRunning = false;
+    private ControlSession controlSession = null;
+
+    private final Object hostPendingLock = new Object();
+
+    public ClientHandler(Socket socket) throws IOException {
+        this.socket = socket;
+        this.serverProtocol = new ServerProtocol(this.socket.getInputStream(), this.socket.getOutputStream());
+    }
+
+    @Override
+    public void run() {
+        System.out.println("thread is running");
+        this.isRunning = true;
+        try {
+            this.clientType = identification();
+            switch (this.clientType) {
+                case HOST:
+                    hostHandler();
+                    break;
+                case VIEWER:
+                    viewerHandler();
+                    break;
+                case NULL:
+                    break;
+            }
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
+        } catch (InterruptedException e) {
+            System.out.println(e.getMessage());
+        }
+        finally  {
+            if (this.clientType != ClientType.VIEWER)
+            closeEverything();
+        }
+    }
+
+    private ClientType identification() throws IOException {
+        Packet identificationPacket = this.serverProtocol.recievePacket();
+        Packet.PacketType packetType = identificationPacket.getPacketType();
+
+        if (packetType != Packet.PacketType.HOST && packetType != Packet.PacketType.VIEWER) {
+            this.serverProtocol.sendErrStringPacket("identification has been failed :(");
+            return ClientType.NULL;
+        }
+        this.serverProtocol.sendSuccessPacket("enter desired session code");
+        return packetType == PacketType.HOST ? ClientType.HOST : ClientType.VIEWER;
+    }
+
+    
+    private void hostHandler() throws IOException, InterruptedException {
+        String sessionKey = recieveSessionKeyFromHost();
+
+        RelayServer.addAWaitingHost(sessionKey, this);
+        System.out.println("Host has been added to waiting list");
+
+        RelayServer.logConnection(sessionKey, this.socket.getInetAddress().getHostAddress());
+        hostPendingConnection();
+
+        ControlSession controlSession = RelayServer.getControlSessionByKey(sessionKey);
+        ClientHandler viewerHandler = controlSession.getViewerHandler();
+
+        // transfering data between the viewer to the host
+        Thread viewerToHost = new Thread(() -> {
+            try {
+                boolean keepRunning = true;
+                while (keepRunning) {
+                    Packet viewerPacket = viewerHandler.recievePacket();
+                    sendPacket(viewerPacket);;
+                    keepRunning = viewerPacket.getPacketType() != Packet.PacketType.QUIT;
+                }
+
+            } catch (IOException e) { System.out.println(e.getMessage()); }
+        }); 
+        viewerToHost.start();
+
+        // transfering data between host to the viewer
+        boolean keepRunning = true;
+        while (keepRunning) {
+            Packet hostPacket = this.serverProtocol.recievePacket();
+            viewerHandler.sendPacket(hostPacket);
+            keepRunning = hostPacket.getPacketType() != Packet.PacketType.QUIT;
+        }
+    }
+
+    private void hostPendingConnection() throws InterruptedException {
+        synchronized (this.hostPendingLock) {
+            while (this.isRunning) {
+                this.hostPendingLock.wait();
+            }
+            System.out.println("Viewer has been found");
+        }
+    }
+    
+    private void viewerHandler() throws IOException {
+        String sessionKey = recieveSessionKeyFromViewer();
+        ClientHandler hostHandler = RelayServer.removeAWaitingHost(sessionKey);
+
+        this.controlSession = new ControlSession(this, hostHandler);
+        RelayServer.addAnActiveSession(sessionKey, this.controlSession);
+        RelayServer.logViewerJoining(sessionKey, this.socket.getInetAddress().getHostAddress());
+        
+        hostHandler.serverProtocol.sendSuccessPacket("connected to viewer!"); 
+        hostHandler.serverProtocol.recievePacket();
+
+        this.serverProtocol.sendSuccessPacket("Connected to host!"); 
+
+        synchronized (hostHandler.hostPendingLock) { 
+            hostHandler.isRunning = false;
+            hostHandler.hostPendingLock.notify();
+        }
+    }
+
+    private String recieveSessionKeyFromHost() throws IOException {
+        while (true) {
+            String sessionKey = this.serverProtocol.getPacketStringPayload();
+            if (!RelayServer.isKeyInActiveSessions(sessionKey) && !RelayServer.isKeyInWaitingHosts(sessionKey)) {
+                this.serverProtocol.sendSuccessPacket("key found");
+                return sessionKey;
+            }
+            this.serverProtocol.sendErrStringPacket("session Key is in use");
+        }
+    }
+    
+    private String recieveSessionKeyFromViewer() throws IOException {
+        while (true) {
+            String sessionKey = this.serverProtocol.getPacketStringPayload();
+
+            if (RelayServer.isKeyInWaitingHosts(sessionKey)) {
+                
+                return sessionKey;
+            }
+            this.serverProtocol.sendErrStringPacket("No waiting host recognized by this key was found");
+        }
+    }
+
+    private void sendPacket(Packet packet) throws IOException {
+        this.serverProtocol.sendPacket(packet);
+    }
+
+    private Packet recievePacket() throws IOException {
+        return this.serverProtocol.recievePacket();
+    }
+
+    private void closeEverything() {
+        try {
+            if (getInputStream() != null) getInputStream().close();
+            if (getOutputStream() != null) getOutputStream().close();
+            if (socket != null) socket.close();
+            RelayServer.closeSession(this.controlSession.getSessionKey());
+        } catch (IOException e) {
+        System.err.println("Error while closing: " + e.getMessage());
+        }
+    }
+
+    public Socket getSocket() {
+        return this.socket;
+    }
+
+    public DataInputStream getInputStream() {
+        return this.serverProtocol.getInputStream();
+    }
+
+    public DataOutputStream getOutputStream() {
+        return this.serverProtocol.getOutputStream();
+    }
+
+    public ClientType getClientType() {
+        return this.clientType;
+    }
+
+    public boolean isRunning() {
+        return this.isRunning;
+    }
+}
+
+
+enum ClientType {
+    HOST,
+    VIEWER,
+    NULL;
+}
+
+
+================================================================================
+FILE: app\src\main\java\server\ControlSession.java
+================================================================================
+
+package server;
+
+public class ControlSession {
+    private ClientHandler viewerHandler;
+    private ClientHandler hostHandler;
+
+    private String sessionKey = null;
+
+    public ControlSession(ClientHandler viewerHandler, ClientHandler hostHandler) {
+        this.viewerHandler = viewerHandler;
+        this.hostHandler = hostHandler;
+    }
+
+    public ClientHandler getViewerHandler() {
+        return this.viewerHandler;
+    }
+
+    public ClientHandler getHostHandler() {
+        return this.hostHandler;
+    }
+
+    public String getSessionKey() {
+        return sessionKey;
+    }
+
+    public void setSessionKey(String sessionKey) {
+        this.sessionKey = sessionKey;
+    }
+}
+
+
+================================================================================
+FILE: app\src\main\java\server\DatabaseManager.java
+================================================================================
+
+package server;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+
+public class DatabaseManager {
+    
+    // A PAth to the database file
+    private final String dbPath = "jdbc:ucanaccess://KishonViewer1.accdb";
+
+    public DatabaseManager() {
+        try (Connection conn = DriverManager.getConnection(dbPath)) {
+            System.out.println("connection has been established");
+        } catch (SQLException e) {
+            System.err.println(e.getMessage());
+        }
+    }
+
+    public void logConnection(String sessionKey, String hostIp) {
+        String sql = "INSERT INTO Sessions (SessionKey, HostIP, Status, StartTime) VALUES (?, ?, ?, ?)";
+        
+        try (Connection conn = DriverManager.getConnection(dbPath);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setString(1, sessionKey);
+            pstmt.setString(2, hostIp);
+            pstmt.setString(3, "WAITING"); // Session is waiting for a viewer
+            pstmt.setTimestamp(4, new Timestamp(System.currentTimeMillis()));
+            
+            pstmt.executeUpdate();
+            System.out.println("DB Session created: " + sessionKey+ " " + hostIp);
+            
+        } catch (SQLException e) {
+            System.err.println("DB Error inserting host: " + e.getMessage());
+        }
+    }
+
+    public void logViewerJoining(String sessionKey, String viewerIp) {
+        String sql = "UPDATE Sessions SET ViewerIP = ?, Status = 'ACTIVE' WHERE SessionKey = ? AND Status = 'WAITING'";
+        
+        try (Connection conn = DriverManager.getConnection(dbPath);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setString(1, viewerIp);
+            pstmt.setString(2, sessionKey);
+            
+            int rowsAffected = pstmt.executeUpdate();
+            if (rowsAffected > 0) {
+                System.out.println("seesion activated" + sessionKey+ " " + viewerIp);
+            } else {
+                System.out.println("no session found" + sessionKey+ " " + viewerIp);
+            }
+            
+        } catch (SQLException e) {
+            System.err.println(e.getMessage());
+        }
+    }
+
+    public void closeSession(String sessionKey) {
+        String sql = "UPDATE Sessions SET Status = 'CLOSED' WHERE SessionKey = ?";
+        
+        try (Connection conn = DriverManager.getConnection(dbPath);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setString(1, sessionKey);
+            pstmt.executeUpdate();
+            System.out.println("DB Session closed: " + sessionKey);
+            
+        } catch (SQLException e) {
+            System.err.println("DB Error Error closing session: " + e.getMessage());
+        }
+    }
+}
+
+================================================================================
+FILE: app\src\main\java\server\RelayServer.java
+================================================================================
+
+package server;
+
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
+
+public class RelayServer {
+    private static final int LISTENING_PORT = 5000;
+
+    private static Map<String, ClientHandler> waitingHosts;
+    private static Map<String, ControlSession> activeSessions;
+
+    private static DatabaseManager databaseManager;
+
+    public static void main(String[] args) {
+        System.out.println("server has started");
+        startServer(LISTENING_PORT);
+    }
+
+    private static void startServer(int listeningPort) {
+        waitingHosts = new HashMap<String, ClientHandler>();
+        activeSessions = new HashMap<String, ControlSession>();
+
+        databaseManager = new DatabaseManager();
+        try (ServerSocket serverSocket = new ServerSocket(listeningPort)) {
+            System.out.println("The server is litening on port: " + listeningPort);
+
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("client has been connected from IP: " + clientSocket.getInetAddress().getHostAddress());
+                ClientHandler clientHandler = new ClientHandler(clientSocket);
+
+                Thread thread = new Thread(clientHandler);
+                thread.start();
+            }
+        }
+        catch (IOException e) {
+        System.out.println("stop the current server broda or switch port");
+        }
+    } 
+
+    public static void logConnection(String sessionKey, String hostIp) {
+        System.out.println("[DB] Session created: " + sessionKey + " (Host: " + hostIp + ")");
+        databaseManager.logConnection(sessionKey, hostIp);
+    }
+
+    public static void logViewerJoining(String sessionKey, String viewerIp) {
+        System.out.println("[DB] Session activated: " + sessionKey + " (Viewer: " + viewerIp + ")");
+        databaseManager.logViewerJoining(sessionKey, viewerIp);
+    }
+
+    public static void closeSession(String sessionKey) {
+        System.out.println("[DB] Session closed: " + sessionKey);
+        databaseManager.closeSession(sessionKey);
+    }
+
+
+    public static boolean isKeyInWaitingHosts(String keySession) {
+        return waitingHosts.containsKey(keySession);
+    }
+    
+    public static void addAWaitingHost(String key, ClientHandler clientHandler) {
+        if (!isKeyInWaitingHosts(key)) {
+            waitingHosts.put(key, clientHandler);
+        } else {
+            throw new RuntimeException("waiting host already exists");
+        }
+    }
+
+    public static boolean isKeyInActiveSessions(String keySession) {
+        return activeSessions.containsKey(keySession);
+    }
+    
+    public static void addAnActiveSession(String key, ControlSession controlSession) {
+        if (!isKeyInActiveSessions(key)) {
+            activeSessions.put(key, controlSession);
+        } else {
+            throw new RuntimeException("active session key already exists");
+        }
+    }
+
+    public static ClientHandler removeAWaitingHost(String key) {
+        if (isKeyInWaitingHosts(key)) {
+            return waitingHosts.remove(key);
+        } else {
+            throw new RuntimeException("no such a waiting host");
+        }
+    }
+
+    public static ControlSession getControlSessionByKey(String keySession) {
+        if (isKeyInActiveSessions(keySession)) {
+            return activeSessions.get(keySession);
+        } else {
+            throw new RuntimeException("key is not in active sessions");
+        }
+    }
+}
+
+
+================================================================================
+FILE: app\src\main\java\viewer\NetworkReciever.java
+================================================================================
+
+package viewer;
+
+import resources.CryptoUtils;
+import resources.Packet;
+import resources.Packet.PacketType;
+import resources.ServerProtocolReciever;
+
+public class NetworkReciever implements Runnable {
+    private ServerProtocolReciever serverProtocol;
+    private RemoteUpdateListener UI;
+    private HandleDissconnection viewerManager;
+    private String cryptoKey;
+
+    public NetworkReciever(ServerProtocolReciever serverProtocol, RemoteUpdateListener UI, HandleDissconnection viewerManager) {
+        this.serverProtocol = serverProtocol;
+        this.UI = UI;
+        this.viewerManager = viewerManager;
+    }
+
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
+    @Override
+    public void run() {
+        try {
+            while (true) {
+                Packet incomingPacket = serverProtocol.recievePacket();
+
+                if (incomingPacket == null) break;
+                
+                if (cryptoKey != null && incomingPacket.getPayload() != null && incomingPacket.getPayload().length > 0) {
+                    byte[] decryptedPayload = CryptoUtils.decrypt(incomingPacket.getPayload(), cryptoKey);
+                    incomingPacket = new Packet(incomingPacket.getPacketType(), decryptedPayload);
+                }
+
+                if (incomingPacket.getPacketType() == PacketType.IMAGE) {
+                    UI.onImageRecieved(incomingPacket.getPayload());
+                } 
+                
+                else if (incomingPacket.getPacketType() == PacketType.QUIT) {
+                    viewerManager.handleQuitRequest();
+                    break; 
+                }
+            }
+        } catch (Exception e) {
+            this.viewerManager.handleConnectionLost();
+        } finally {
+            System.out.println("NetworkReceiver been shutted off");
+        }
+    }
+}
+
+================================================================================
+FILE: app\src\main\java\viewer\NetworkSender.java
+================================================================================
+
+package viewer;
+
+import java.io.IOException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import resources.*;
+
+public class NetworkSender implements ViewerUIListener, Runnable {
+    private final ServerProtocolSender serverProtocol;
+    private final HandleDissconnection viewerManager;
+    
+    private final BlockingQueue<Packet> packetQueue;
+
+    private boolean isRunning;
+    private String cryptoKey;
+
+    public NetworkSender(ServerProtocolSender serverProtocol, HandleDissconnection viewerManager) {
+        this.serverProtocol = serverProtocol;
+        this.viewerManager = viewerManager;
+
+        this.packetQueue = new LinkedBlockingQueue<>();
+
+        this.isRunning = false;
+    }
+
+    public void setCryptoKey(String key) {
+        this.cryptoKey = key;
+    }
+
+    @Override
+    public void run() {
+        this.isRunning = true;
+        try {
+            while (isRunning) {
+                Packet packet = packetQueue.take();
+                
+                if (cryptoKey != null && packet.getPayload() != null && packet.getPayload().length > 0) {
+                    byte[] encrypted = CryptoUtils.encrypt(packet.getPayload(), cryptoKey);
+                    packet = new Packet(packet.getPacketType(), encrypted);
+                }
+
+                serverProtocol.sendPacket(packet);
+                
+                // if recieved QUIT packet, stop and notify viewer manager
+                if (packet.getPacketType() == Packet.PacketType.QUIT) {
+                    this.viewerManager.handleQuitRequest();
+                    isRunning = false;
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
+            viewerManager.handleConnectionLost();
+        }
+    }
+
+    public boolean isRunning() {
+        return this.isRunning;
+    }
+
+    @Override
+    public void sendMouseMove(int x, int y) {
+        packetQueue.offer(ServerProtocol.createCordsPacket(x, y));
+    }
+
+    @Override
+    public void sendMouseButton(int button, boolean isPressed) {
+        packetQueue.offer(ServerProtocol.createMouseButtonPacket(button, isPressed));
+    }
+
+    @Override
+    public void sendMouseWheel(int rotation) {
+        packetQueue.offer(ServerProtocol.createMouseWheelPacket(rotation));
+    }
+
+    @Override
+    public void sendKeyPress(int keyCode, boolean isPressed) {
+        packetQueue.offer(ServerProtocol.createKeyPressPacket(keyCode, isPressed));
+    }
+
+    @Override
+    public void sendDisconnect() {
+        packetQueue.offer(ServerProtocol.createQuitPacket());
+    }
+
+    @Override
+    public void sendFile(String fileName, byte[] fileData) {
+        packetQueue.offer(ServerProtocol.createFilePacket(fileName, fileData));
+    }
+    
+}
+
+interface ViewerUIListener {
+    // mouse events
+    void sendMouseMove(int x, int y);
+    void sendMouseButton(int button, boolean isPressed); // 1=Left, 2=Middle, 3=Right
+    void sendMouseWheel(int rotation);
+
+    // keyboard events
+    void sendKeyPress(int keyCode, boolean isPressed);
+
+    // connection events
+    void sendDisconnect();
+
+    // file transfer
+    void sendFile(String fileName, byte[] fileData);
+}
+
+
+================================================================================
+FILE: app\src\main\java\viewer\RemoteUpdateListener.java
+================================================================================
+
+package viewer;
+
+public interface RemoteUpdateListener {
+    // When viewer UI receives image data to be rendered
+    public void onImageRecieved(byte[] imageData);
+    
+    // When host connection has been closed or lost
+    public void onSessionClosed(String reason);
+
+    // UI State Management
+    public void hideUI();
+    public void showUI();
+    public void closeUI();
+}
+
+================================================================================
+FILE: app\src\main\java\viewer\ViewerManager.java
+================================================================================
+
+package viewer;
+
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.Socket;
+import java.util.function.Supplier;
+
+import resources.*;
+import resources.Packet.PacketType;
+
+public class ViewerManager implements ConnectableToHost, HandleDissconnection {
+
+    private static final String SERVER_IP = "127.0.0.1"; 
+    private static final int SERVER_PORT = 5000; 
+    
+    private final ServerProtocol serverProtocol;
+    private final Socket viewerSocket;
+
+    private RemoteUpdateListener viewerUI;
+    private NetworkReciever networkReciever;
+    private NetworkSender networkSender;
+
+    private Thread networkSenderThread;
+    private Thread networkRecieverThread;
+    private Thread connectionThread; 
+
+    private boolean hasConnectedTohost = false;
+
+    public ViewerManager(String serverIP, int serverPort) throws IOException {
+        this.viewerSocket = new Socket(serverIP, serverPort);
+        DataOutputStream outputStream = new DataOutputStream(this.viewerSocket.getOutputStream());
+        DataInputStream inputStream = new DataInputStream(this.viewerSocket.getInputStream());
+
+        this.serverProtocol = new ServerProtocol(inputStream, outputStream);
+    }
+
+    private void startViewer() {
+        this.networkSender = new NetworkSender(this.serverProtocol, this);
+        this.viewerUI = new ViewerUI(this.networkSender, this);
+        this.networkReciever = new NetworkReciever(this.serverProtocol, this.viewerUI, this);
+        
+        this.networkSenderThread = new Thread(networkSender);
+        this.networkRecieverThread = new Thread(networkReciever);
+
+        this.viewerUI.showUI();
+    }
+
+    @Override
+    public void connectToHost(Supplier<String> sesionCode, ConnectionCallback callback) {
+        this.connectionThread = new Thread(() -> {
+            try {
+                Packet idPacket = new Packet(Packet.PacketType.VIEWER);
+                this.serverProtocol.sendPacket(idPacket);
+                
+                Packet promptPacket = serverProtocol.recievePacket(); 
+                if (promptPacket.getPacketType() == PacketType.ERR_MESSAGE) {
+                    throw new RuntimeException("Identification has been failed");
+                }
+                
+                boolean isAuthorized = false;
+                String key = null;
+                
+                // 3. Loop until connection 
+                while (!isAuthorized) {
+                    key = sesionCode.get();
+                    if (key == null) {
+                        return; // User cancelled the dialog
+                    }
+
+                    this.serverProtocol.sendPacket(new Packet(PacketType.SESSION_KEY, key.getBytes()));
+                    
+                    Packet response = serverProtocol.recievePacket();
+                    
+                    if (response.getPacketType() == PacketType.SUCCESS) {
+                        isAuthorized = true;
+                    } else {
+                        // Notify UI to show the error message received from server
+                        String serverMessage = new String(response.getPayload());
+                        callback.onConnectionError(serverMessage);
+                    }
+                }
+
+                // 4. Connection successful
+                this.hasConnectedTohost = true;
+
+                // Pass the key for E2E encryption
+                this.networkSender.setCryptoKey(key); 
+                this.networkReciever.setCryptoKey(key);
+
+                this.networkSenderThread.start();
+                this.networkRecieverThread.start();
+
+                callback.onConnectionSuccess();
+
+            } catch (IOException e) {
+                callback.onConnectionError(e.getMessage());
+            } catch (Exception e) {
+                callback.onConnectionError(e.getMessage());
+            }
+        });
+
+        this.connectionThread.start();
+    }
+
+    public boolean hasConnectedTohost() {
+        return this.hasConnectedTohost;
+    }
+
+    public static void main(String[] args) {
+        try {
+            ViewerManager viewerManager = new ViewerManager(SERVER_IP, SERVER_PORT);
+            viewerManager.startViewer();
+            
+        } catch (IOException e) {
+            System.err.println("Could not connect to server: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void handleConnectionLost() {
+        cleanup("Connection has been lost");
+    }
+
+    @Override
+    public void handleQuitRequest() {
+        cleanup("By quit request");
+    }
+
+    // Stop program helper method
+    private void cleanup(String reason) {
+        System.out.println(reason);
+        try {
+            // Closing sockets
+            if (viewerSocket != null && !viewerSocket.isClosed()) {
+                viewerSocket.close();
+            }
+            
+            // Interrupting the networking threads if necessary 
+            if (networkSenderThread != null) {
+                networkSenderThread.interrupt();
+            } 
+            if (networkRecieverThread != null) {
+                networkRecieverThread.interrupt();
+            }
+            if (connectionThread != null) {
+                connectionThread.interrupt();
+            }
+
+            // Close the UI
+            if (this.viewerUI != null) {
+                this.viewerUI.onSessionClosed(reason);
+            }
+
+            this.hasConnectedTohost = false;
+        } catch (IOException e) {
+            System.err.println(e.getMessage());
+        }
+    }
+}
+
+interface ConnectableToHost {
+    // on call connect to the host asynchronously
+    public void connectToHost(Supplier<String> sesionCode, ConnectionCallback callback);
+
+    // has host been connected
+    public boolean hasConnectedTohost();
+}
+
+interface HandleDissconnection {
+    public void handleConnectionLost();
+    public void handleQuitRequest();
+}
+
+
+================================================================================
+FILE: app\src\main\java\viewer\ViewerUI.java
+================================================================================
+
+package viewer;
+
+import java.awt.BorderLayout;
+import java.awt.Graphics;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import javax.imageio.ImageIO;
+import javax.swing.JFrame;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
+import javax.swing.JButton;
+import javax.swing.JFileChooser;
+import java.io.File;
+import java.awt.event.*;
+
+public class ViewerUI extends JFrame implements RemoteUpdateListener, ConnectionCallback {
+    private final ViewerUIListener networkSender;
+    private final ConnectableToHost viewerManager;
+    
+    private final ImagePanel canvas;
+
+    public ViewerUI(ViewerUIListener networkSender, ConnectableToHost viewerManager) {
+        this.networkSender = networkSender;
+        this.viewerManager = viewerManager;
+
+        this.setTitle("Remote Desktop Viewer");
+        this.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        this.setSize(1280, 720);
+        this.setLayout(new BorderLayout());
+
+        this.canvas = new ImagePanel();
+        this.canvas.setEnabled(false);
+        this.canvas.setFocusable(true); 
+        this.add(canvas, BorderLayout.CENTER);
+
+        JPanel topPanel = new JPanel();
+        JButton sendFileBtn = new JButton("Send File");
+        sendFileBtn.addActionListener(e -> {
+            JFileChooser chooser = new JFileChooser();
+            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+                File file = chooser.getSelectedFile();
+                try {
+                    byte[] data = java.nio.file.Files.readAllBytes(file.toPath());
+                    networkSender.sendFile(file.getName(), data);
+                } catch (Exception ex) {}
+            }
+        });
+        topPanel.add(sendFileBtn);
+        this.add(topPanel, BorderLayout.NORTH);
+
+        setupEventListeners();
+    }
+
+    private void setupEventListeners() {
+        canvas.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                sendScaledMouseCoords(e.getX(), e.getY());
+                networkSender.sendMouseButton(e.getButton(), true);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                sendScaledMouseCoords(e.getX(), e.getY());
+                networkSender.sendMouseButton(e.getButton(), false);
+            }
+        });
+
+        canvas.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                sendScaledMouseCoords(e.getX(), e.getY());
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                sendScaledMouseCoords(e.getX(), e.getY());
+            }
+        });
+
+        canvas.addMouseWheelListener(e -> {
+            networkSender.sendMouseWheel(e.getWheelRotation());
+        });
+
+        canvas.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                networkSender.sendKeyPress(e.getKeyCode(), true);
+            }
+
+            @Override
+            public void keyReleased(KeyEvent e) {
+                networkSender.sendKeyPress(e.getKeyCode(), false);
+            }
+        });
+    }
+
+    /**
+     * maps local Canvas coordinates to Host screen coordinates 
+     * based on the received image dimensions.
+     */
+    private void sendScaledMouseCoords(int x, int y) {
+        BufferedImage img = canvas.getImage();
+        if (img != null) {
+            double scaleX = (double) img.getWidth() / canvas.getWidth();
+            double scaleY = (double) img.getHeight() / canvas.getHeight();
+
+            int scaledX = (int) (x * scaleX);
+            int scaledY = (int) (y * scaleY);
+
+            networkSender.sendMouseMove(scaledX, scaledY);
+        }
+    }
+
+    @Override
+    public void onImageRecieved(byte[] imageData) {
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(imageData);
+            BufferedImage image = ImageIO.read(bais);
+
+            if (image != null) {
+                SwingUtilities.invokeLater(() -> {
+                    canvas.updateImage(image);
+                });
+            }
+        } catch (IOException e) {
+            System.err.println(e.getMessage());
+        }
+    }
+
+    @Override
+    public void onSessionClosed(String reason) {
+        System.out.println("session closed");
+        SwingUtilities.invokeLater(() -> {
+            this.canvas.setEnabled(false);
+            JOptionPane.showMessageDialog(this, "Session Closed: " + reason);
+            this.dispose();
+        });
+    }
+
+    @Override
+    public void hideUI() {
+        SwingUtilities.invokeLater(() -> this.setVisible(false));
+    }
+
+    @Override
+    public void showUI() {
+        SwingUtilities.invokeLater(() -> {
+            this.setVisible(true);
+            promptForConnection();
+        });
+    }
+
+    private void promptForConnection() {
+        viewerManager.connectToHost(() -> {
+            return JOptionPane.showInputDialog(this, "Enter Session Code:");
+        }, this);
+    }
+
+    @Override
+    public void onConnectionSuccess() {
+        SwingUtilities.invokeLater(() -> {
+            this.setTitle("Connected to Host - Remote Desktop Viewer");
+            this.canvas.setEnabled(true); 
+            this.canvas.requestFocusInWindow(); // Give focus to canvas for keyboard input
+        });
+    }
+
+    @Override
+    public void onConnectionError(String message) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, message);
+        });
+    }
+
+    @Override
+    public void closeUI() {
+        SwingUtilities.invokeLater(() -> {
+            this.setVisible(false);
+            this.dispose();
+        });
+    }
+
+    private static class ImagePanel extends JPanel {
+        private BufferedImage currentImage;
+
+        public void updateImage(BufferedImage img) {
+            this.currentImage = img;
+            this.repaint();
+        }
+
+        public BufferedImage getImage() {
+            return currentImage;
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (currentImage != null) {
+                g.drawImage(currentImage, 0, 0, this.getWidth(), this.getHeight(), null);
+            } else {
+                g.drawString("Waiting for connection...", 10, 20);
+            }
+        }
+    }
+}
+
+interface ConnectionCallback {
+    void onConnectionSuccess();
+    void onConnectionError(String message);
+}
